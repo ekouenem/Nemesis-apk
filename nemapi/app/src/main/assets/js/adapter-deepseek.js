@@ -444,6 +444,22 @@
       return J({ available: false, enabled: false });
     },
 
+    /** Locate only the explicit continuation button for an Android touch event.
+     * Some DeepSeek handlers ignore an untrusted element.click(). */
+    continueTarget: function () {
+      var nodes = continueNodes();
+      for (var i = nodes.length - 1; i >= 0; i--) {
+        var el = nodes[i];
+        if (!visible(el) || disabled(el) || !continueLabel(el)) continue;
+        try {
+          el.scrollIntoView({block: "center", inline: "center"});
+          var r = el.getBoundingClientRect();
+          return J({ok:true, x:r.left+r.width/2, y:r.top+r.height/2, ratio:window.devicePixelRatio || 1});
+        } catch(e) { return J({ok:false,reason:"continue_target_unavailable"}); }
+      }
+      return J({ok:false,reason:"continue_missing"});
+    },
+
     /** Clique uniquement sur une action de reprise explicite (pas sur Envoyer). */
     continueGeneration: function () {
       var nodes = continueNodes();

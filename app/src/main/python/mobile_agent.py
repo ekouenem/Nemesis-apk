@@ -5,7 +5,6 @@ Only the listed mobile tools are enabled. Configured SSH and local workspace act
 import json
 import re
 import base64
-import hashlib
 import fnmatch
 import shlex
 import os
@@ -58,6 +57,9 @@ def configure(files_dir, port=8090, token='', shared_dir=''):
         columns = {row['name'] for row in db.execute('PRAGMA table_info(sessions)')}
         if 'pinned' not in columns: db.execute('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
         if 'prompt_signature' not in columns: db.execute("ALTER TABLE sessions ADD COLUMN prompt_signature TEXT NOT NULL DEFAULT ''")
+        msg_columns = {row['name'] for row in db.execute('PRAGMA table_info(messages)')}
+        if 'duration_ms' not in msg_columns: db.execute('ALTER TABLE messages ADD COLUMN duration_ms INTEGER')
+        if 'rating' not in msg_columns: db.execute('ALTER TABLE messages ADD COLUMN rating INTEGER NOT NULL DEFAULT 0')
         db.executescript('''CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, content TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL);
@@ -102,9 +104,21 @@ def get_session(sid):
     with _db() as db:
         row = db.execute('SELECT id,title,mode,conversation_url,uncertain,pinned FROM sessions WHERE id=?', (str(sid),)).fetchone()
         if row is None: return _data({'ok': False, 'error': 'Discussion introuvable'})
-        messages = db.execute('SELECT role,text FROM messages WHERE session_id=? ORDER BY id', (str(sid),)).fetchall()
+        messages = db.execute('SELECT id,role,text,duration_ms,rating FROM messages WHERE session_id=? ORDER BY id', (str(sid),)).fetchall()
     session = dict(row); session['messages'] = [dict(m) for m in messages]; session['ok'] = True
     return _data(session)
+
+
+def rate_message(sid, message_id, rating):
+    """Local-only feedback, scoped to this session and assistant messages."""
+    try:
+        rating = int(rating); message_id = int(message_id)
+    except (TypeError, ValueError):
+        return _data({'ok': False, 'error': 'Évaluation invalide'})
+    if rating not in (-1, 0, 1): return _data({'ok': False, 'error': 'Évaluation invalide'})
+    with _db() as db:
+        row = db.execute("UPDATE messages SET rating=? WHERE id=? AND session_id=? AND role='assistant'", (rating, message_id, str(sid)))
+    return _data({'ok': row.rowcount == 1})
 
 
 def recover_session(sid, url=''):
@@ -566,6 +580,8 @@ Pour toute tâche de production de documents, présentation, analyse ou dévelop
 PROMPT_WORK = """# NEMESIS Work — recherche et travail de bureau
 Tu es NEMESIS Work, assistant professionnel de recherche, de rédaction et de travail de bureau. Transforme l’objectif en livrables utiles : recherches, synthèses, notes, tableaux textuels, brouillons, organisation documentaire et analyses. Adapte le niveau de détail et la langue à l’utilisateur ; par défaut réponds en français.
 
+Communique selon le profil et le besoin de l’utilisateur. Pour un public non technique, privilégie des explications simples centrées sur l’objectif et le livrable plutôt que sur les commandes, scripts ou détails d’exécution. Tu peux enchaîner les outils sans commenter chaque étape ou communiquer brièvement aux étapes importantes. Si l’utilisateur souhaite du détail ou s’il est pertinent, sois explicite. Ne masque jamais un échec, un risque ou une limite importante ; annonce les résultats vérifiés et où trouver les livrables.
+
 Pour les questions factuelles actuelles, cherche et recoupe lorsque les outils sont disponibles ; privilégie les sources primaires et fournisse des liens précis. Distingue les informations vérifiées, les hypothèses et les incertitudes. Pour les fichiers, lis et vérifie l’état réel avant de modifier. Préserve les données existantes, demande clarification lorsque nécessaire et vérifie les résultats avant de les annoncer. Pour des formats bureautiques complexes, ne prétends pas avoir créé un document valide si tu n’as pas pu le produire ou le vérifier.
 
 Outils disponibles : web_search(query), web_fetch(url), read_file(path), write_file(path,content), edit(path,old_string,new_string), bash(command,timeout). Les pièces jointes sont fournies avec le message quand elles sont prises en charge. Les liens web_fetch doivent être HTTPS publics et les redirections ne sont pas suivies. download_file(remote_path,path) rapatrie un fichier SSH dans cette discussion.""" + "\n\n" + PROMPT_TOOL_RULES + "\n\n" + PROMPT_SKILLS + "\n\n" + PROMPT_MCP
@@ -685,9 +701,9 @@ def live_progress(sid):
     return _data({'text': row['text'] if row else ''})
 
 
-def _message(sid, role, text):
+def _message(sid, role, text, duration_ms=None):
     with _db() as db:
-        db.execute('INSERT INTO messages(session_id,role,text,created) VALUES(?,?,?,?)', (sid, role, text, time.time()))
+        db.execute('INSERT INTO messages(session_id,role,text,created,duration_ms) VALUES(?,?,?,?,?)', (sid, role, text, time.time(), duration_ms))
         db.execute('UPDATE sessions SET updated=? WHERE id=?', (time.time(),sid))
 
 
@@ -739,13 +755,11 @@ def _send(sid, text, attachments_json='[]'):
     provider = SessionProvider(sid, row['conversation_url'])
     parser = ActionParser(strict=True, extra_valid_tools={'memory_add','memory_update','memory_delete','memory_get','memory_search','download_file','skill_list','skill_read','skill_install','skill_sync','mcp_list','mcp_tools','mcp_call'})
     mode = row['mode']
-    system_prompt = _system_prompt(mode)
-    signature = hashlib.sha256(system_prompt.encode('utf-8')).hexdigest()
-    update_prompt = signature != row['prompt_signature']
-    prefix = system_prompt if update_prompt and not provider.url else ''
+    # The system instructions and memory are sent only when creating a new
+    # DeepSeek conversation. Never prepend them to a resumed URL, even after
+    # preferences change; avoid resending history or surprising the user.
+    prefix = _system_prompt(mode) if not provider.url else ''
     current = text
-    if update_prompt and provider.url:
-        current = '[UPDATED SYSTEM INSTRUCTIONS]\n' + system_prompt + '\n\n[USER MESSAGE]\n' + current
     role = 'user'
     tool_requests = 0
     iteration = 0
@@ -753,10 +767,10 @@ def _send(sid, text, attachments_json='[]'):
         if _CANCEL.is_set():
             _message(sid, 'error', 'Tâche arrêtée à la demande de l’utilisateur.')
             return {'ok':False, 'error':'Tâche arrêtée'}
+        started = time.monotonic()
         result = provider.send_message(current, role=role, system_prefix=prefix, images=images if iteration == 0 else None, cancel_event=_CANCEL)
+        duration_ms = max(0, int((time.monotonic() - started) * 1000))
         prefix = ''
-        if iteration == 0 and result.get('success') and update_prompt:
-            with _db() as db: db.execute('UPDATE sessions SET prompt_signature=? WHERE id=?', (signature,sid))
         if not result.get('success'):
             error = str(result.get('error', 'Erreur NemApi'))
             _message(sid, 'error', error)
@@ -770,9 +784,9 @@ def _send(sid, text, attachments_json='[]'):
         actions = parsed.get('actions') or ([parsed['action']] if parsed.get('action') else [])
         if not actions:
             answer = parsed.get('text') or raw
-            _message(sid, 'assistant', answer)
+            _message(sid, 'assistant', answer, duration_ms)
             return {'ok': True, 'text': answer}
-        if parsed.get('text'): _message(sid, 'assistant', parsed['text'])
+        if parsed.get('text'): _message(sid, 'assistant', parsed['text'], duration_ms)
         results = []
         for action in actions:
             tool_requests += 1

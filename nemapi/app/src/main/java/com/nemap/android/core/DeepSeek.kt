@@ -152,7 +152,19 @@ object DeepSeek {
         // 4) suivre la réponse, puis actionner « Continue » si le modèle a
         // atteint sa limite de sortie. Chaque reprise ouvre un nouveau flux;
         // son texte est dédoublonné avant d'être envoyé au client OpenAI.
-        var answer = follow(prompt, onDelta, shouldCancel, onKeepAlive, beforeSubmit)
+        val answer = follow(prompt, onDelta, shouldCancel, onKeepAlive, beforeSubmit)
+        return continueAnswer(answer, onDelta, shouldCancel, onKeepAlive)
+    }
+
+    /** Continue an already-started answer. Public for opt-in provider diagnostics;
+     * the caller must serialize access to the shared provider WebView. */
+    suspend fun continueAnswer(
+        initial: String,
+        onDelta: (String) -> Unit,
+        shouldCancel: () -> Boolean = { false },
+        onKeepAlive: () -> Unit = {}
+    ): String {
+        var answer = initial
         var continuationCount = 0
         while (true) {
             val available = waitContinueButton(shouldCancel, if (answer.length >= 6_000) 8_000L else 2_500L, onKeepAlive)
@@ -160,14 +172,19 @@ object DeepSeek {
             if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
             val beforeContinue = Engine.adapter("answer")
             Engine.resetStream()
-            val clicked = Engine.adapter("continueGeneration")
-            if (!clicked.optBoolean("ok")) break
+            val target = Engine.adapter("continueTarget")
+            if (!target.optBoolean("ok")) throw NemApiException(NemApiException.SELECTOR_MISSING, "Le bouton de continuation n'est plus disponible ; réponse incomplète.")
+            val tapped = Engine.tapCssPosition(target.optDouble("x",Double.NaN), target.optDouble("y",Double.NaN), target.optDouble("ratio",1.0))
+            if (!tapped) throw NemApiException(NemApiException.SELECTOR_MISSING, "Impossible de poursuivre la génération ; réponse incomplète.")
             continuationCount++
             NemLog.i("dom", "DeepSeek a affiché « Continue » → reprise $continuationCount")
             val tail = ContinuationTail(answer, onDelta)
-            follow(prompt, onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive, baseline = beforeContinue)
+            follow("", onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive, baseline = beforeContinue, continuation = true)
             tail.finish()
-            answer = tail.fullText()
+            val combined = tail.fullText()
+            if (combined.length <= answer.length) throw NemApiException(
+                NemApiException.STREAM_INTERRUPTED, "La continuation n’a produit aucun nouveau texte ; vérifiez DeepSeek avant de reprendre.")
+            answer = combined
         }
         return answer
     }
@@ -336,7 +353,8 @@ object DeepSeek {
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean,
         onKeepAlive: () -> Unit = {},
-        baseline: JSONObject
+        baseline: JSONObject,
+        continuation: Boolean = false
     ): String {
         val t0 = System.currentTimeMillis()
         var lastKeepAlive = t0
@@ -347,6 +365,11 @@ object DeepSeek {
         var sawStream = false
         var lastContinueCheck = 0L
         var emptyStreamEndedAt = 0L
+        var lastProgressAt = t0
+        fun freshText(a: JSONObject): String {
+            return DomFreshness.freshText(a.optBoolean("ok"),a.optString("text", ""),a.optInt("blocks",0),
+                baseline.optString("text", ""),baseline.optInt("blocks",0),continuation)
+        }
 
         while (true) {
             if (isCancelled(shouldCancel)) {
@@ -363,6 +386,8 @@ object DeepSeek {
                 val st = Engine.streamState()
                 if (st.optBoolean("started")) {
                     sawStream = true
+                    val lastEvent = now - st.optLong("idle", 0).coerceAtLeast(0)
+                    if (lastEvent > lastProgressAt) lastProgressAt = lastEvent
                     val text = st.optString("text", "")
                     if (text.length > acc.length) {
                         onDelta(text.substring(acc.length))
@@ -372,9 +397,13 @@ object DeepSeek {
                         // JSONObject.optString rend la chaîne "null" pour un JSON null :
                         // on teste la nullité réelle du champ.
                         val err = if (st.isNull("error")) "" else st.optString("error", "")
+                        if (err.isNotEmpty() && acc.isNotEmpty()) {
+                            throw NemApiException(NemApiException.STREAM_INTERRUPTED,
+                                "DeepSeek a interrompu une réponse en cours ; elle peut être incomplète.")
+                        }
                         if (err.isNotEmpty() && acc.isEmpty()) {
                             val domAnswer = Engine.adapter("answer")
-                            val fromDom = if (isFreshDomAnswer(domAnswer, baseline)) domAnswer.optString("text", "") else ""
+                            val fromDom = freshText(domAnswer)
                             if (fromDom.isNotEmpty()) {
                                 NemLog.w("hook", "flux en erreur ($err) mais réponse présente dans le DOM → lecture DOM")
                                 onDelta(fromDom)
@@ -409,10 +438,14 @@ object DeepSeek {
 
             if (mode == "dom") {
                 val a = Engine.adapter("answer")
-                val txt = if (isFreshDomAnswer(a, baseline)) a.optString("text", "") else ""
+                val txt = freshText(a)
                 if (txt.isNotEmpty() && txt != lastDom) {
                     lastDom = txt
                     stableSince = now
+                    lastProgressAt = now
+                    if (txt.length > acc.length && txt.startsWith(acc)) {
+                        onDelta(txt.substring(acc.length)); acc = txt
+                    }
                 }
                 val gen = Engine.adapter("generating").optBoolean("generating")
                 if (emptyStreamEndedAt > 0 && lastDom.isEmpty() && now - emptyStreamEndedAt > 30_000L && !gen) break
@@ -441,7 +474,7 @@ object DeepSeek {
                         }
                     } else {
                         val latest = Engine.adapter("answer")
-                        val latestText = if (isFreshDomAnswer(latest, baseline)) latest.optString("text", "") else ""
+                        val latestText = freshText(latest)
                         if (latestText.length > acc.length) {
                             onDelta(latestText.substring(acc.length))
                             acc = latestText
@@ -452,16 +485,18 @@ object DeepSeek {
                 }
             }
 
+            if (now - lastProgressAt > 120_000L) {
+                throw NemApiException(NemApiException.STREAM_INTERRUPTED,
+                    "Aucune progression de DeepSeek pendant deux minutes ; vérifiez la discussion avant de reprendre.")
+            }
             delay(POLL_MS)
         }
 
         // fin de flux : si le hook n'a rien donné, on tente le DOM
         if (acc.isBlank()) {
             val a = Engine.adapter("answer")
-            if (isFreshDomAnswer(a, baseline)) {
-                acc = a.optString("text", "")
-                if(acc.isNotBlank()) onDelta(acc)
-            }
+            acc = freshText(a)
+            if(acc.isNotBlank()) onDelta(acc)
         }
         if (acc.isBlank()) {
             throw NemApiException(

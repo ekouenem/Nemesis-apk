@@ -129,6 +129,22 @@ object Engine {
         return adapter("promptCommit", timeoutMs = 90_000)
     }
 
+    /** Dispatch a single native tap to a CSS position in the hidden WebView.
+     * A real touch is required by DeepSeek's continuation control; never retry
+     * a tap automatically when its outcome is uncertain. */
+    suspend fun tapCssPosition(x: Double, y: Double, ratio: Double): Boolean =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            val w = WebViewHost.webView ?: return@withContext false
+            if (!x.isFinite() || !y.isFinite() || !ratio.isFinite() || ratio <= 0) return@withContext false
+            val px=(x*ratio).toFloat(); val py=(y*ratio).toFloat()
+            if (px < 0 || py < 0 || px >= w.width || py >= w.height) return@withContext false
+            val t=android.os.SystemClock.uptimeMillis()
+            val down=android.view.MotionEvent.obtain(t,t,android.view.MotionEvent.ACTION_DOWN,px,py,0)
+            val up=android.view.MotionEvent.obtain(t,t+80,android.view.MotionEvent.ACTION_UP,px,py,0)
+            try { w.dispatchTouchEvent(down); w.dispatchTouchEvent(up); true }
+            finally { down.recycle(); up.recycle() }
+        }
+
     suspend fun currentUrl(): String = evalJs("location.href", 5_000) ?: ""
 
     /** État du flux observé par le hook réseau. */

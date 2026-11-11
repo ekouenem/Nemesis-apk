@@ -290,14 +290,22 @@ class MobileTests(unittest.TestCase):
         a=json.loads(m.create_session('code'))['id']; b=json.loads(m.create_session('code'))['id']
         self.assertEqual(len(m._tool('todo',{'action':'add','content':'Tester'},a)['tasks']),1)
         self.assertEqual(m._tool('todo',{'action':'list'},b)['tasks'],[])
-    def test_old_session_gets_new_prompt_once(self):
+    def test_old_session_never_resends_system_prompt(self):
         sid=json.loads(m.create_session('work'))['id']; url='https://chat.deepseek.com/a/chat/s/testabc123'
         with m._db() as db: db.execute('UPDATE sessions SET conversation_url=? WHERE id=?',(url,sid))
         provider=Mock(); provider.url=url; provider.send_message.return_value={'success':True,'response':'OK'}
         with patch.object(m,'SessionProvider',return_value=provider):
-            self.assertTrue(json.loads(m.send(sid,'Premier'))['ok']); first=provider.send_message.call_args.args[0]
-            self.assertIn('UPDATED SYSTEM INSTRUCTIONS',first); self.assertIn('web_search',first)
-            self.assertTrue(json.loads(m.send(sid,'Second'))['ok']); second=provider.send_message.call_args.args[0]
-            self.assertNotIn('UPDATED SYSTEM INSTRUCTIONS',second)
+            for text in ('Premier','Second'):
+                m.save_preferences('Nouvelles préférences',True)
+                self.assertTrue(json.loads(m.send(sid,text))['ok'])
+                call=provider.send_message.call_args
+                self.assertEqual(text,call.args[0]); self.assertEqual('',call.kwargs['system_prefix'])
+        messages=json.loads(m.get_session(sid))['messages']; answer=messages[-1]
+        self.assertEqual(answer['role'],'assistant'); self.assertIsNotNone(answer['duration_ms'])
+        self.assertTrue(json.loads(m.rate_message(sid,answer['id'],1))['ok'])
+        self.assertEqual(json.loads(m.get_session(sid))['messages'][-1]['rating'],1)
+        self.assertFalse(json.loads(m.rate_message('other',answer['id'],-1))['ok'])
+        self.assertFalse(json.loads(m.rate_message(sid,messages[0]['id'],1))['ok'])
+        self.assertFalse(json.loads(m.rate_message(sid,answer['id'],3))['ok'])
 
 if __name__ == '__main__': unittest.main()

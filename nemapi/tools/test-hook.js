@@ -124,12 +124,35 @@ data: {"p":"response/fragments/-1/content","o":"APPEND","v":" la réponse"}
   xhr.emit('loadend');
   check('flux terminé', JSON.parse(nap.state()).done, true);
 
+  // DeepSeek's real continuation has its own endpoint, also streamed as SSE.
+  nap.reset();
+  const continuation = new FakeXHR();
+  continuation.open('POST', '/api/v0/chat/continue');
+  continuation.send('{}');
+  check('flux de continuation détecté', JSON.parse(nap.state()).started, true);
+  continuation.responseText = 'data: {"v":"suite"}\n\n';
+  continuation.emit('progress');
+  check('fragments de continuation', JSON.parse(nap.state()).text, 'suite');
+  continuation.emit('loadend');
+  check('fin de continuation', JSON.parse(nap.state()).done, true);
+
+  nap.reset();
+  const challenged = new FakeXHR();
+  challenged.open('POST', '/api/v0/chat/continue');
+  challenged.send('{}');
+  challenged.responseText = '{"code":40303,"msg":"CHALLENGE_REQUIRED","data":{"challenge_id":"not-logged"}}';
+  challenged.emit('progress');
+  challenged.emit('loadend');
+  const challenge = JSON.parse(nap.state());
+  check('challenge de sécurité détecté', challenge.error, 'upstream_error');
+  check('message de vérification explicite', challenge.errorMessage.includes('vérification de sécurité'), true);
+
   // une route qui ne doit PAS être capturée
   const other = new FakeXHR();
   other.open('POST', '/api/v0/telemetry');
   other.send('{}');
-  check('télémétrie ignorée', JSON.parse(nap.state()).url, '/api/v0/chat/completion');
-  check('journal des requêtes', JSON.parse(nap.reqs_seen()), ['POST /api/v0/chat/completion', 'POST /api/v0/telemetry']);
+  check('télémétrie ignorée', JSON.parse(nap.state()).url, '/api/v0/chat/continue');
+  check('journal des requêtes', JSON.parse(nap.reqs_seen()), ['POST /api/v0/chat/completion', 'POST /api/v0/chat/continue', 'POST /api/v0/chat/continue', 'POST /api/v0/telemetry']);
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.' : `\n${failures} test(s) en échec.`);

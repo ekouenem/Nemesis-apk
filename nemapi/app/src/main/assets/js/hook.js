@@ -173,6 +173,16 @@
       }
       return;
     }
+    // DeepSeek may return HTTP 200 with a business-level failure instead of
+    // SSE. Do not misreport an explicit security challenge as an empty answer.
+    if (j && j.code != null && Number(j.code) !== 0 && String(j.code).trim() !== "") {
+      rec.error = "upstream_error";
+      rec.errorMessage = String(j.msg || "") === "CHALLENGE_REQUIRED" || Number(j.code) === 40303
+        ? "DeepSeek demande une vérification de sécurité. Ouvrez DeepSeek dans NEMESIS pour la terminer."
+        : "DeepSeek a refusé la requête (code " + String(j.code).slice(0,20) + ").";
+      rec.done = true;
+      return;
+    }
     if (j && j.error && typeof j.error === "object") {
       rec.error = "upstream_error";
       rec.errorMessage = String(j.error.message || j.error.code || "provider error");
@@ -356,7 +366,7 @@
   }
 
   // Route vérifiée sur chat.deepseek.com : POST /api/v0/chat/completion (XHR, SSE)
-  var CHAT_PATH_RE = /\/chat\/completion(s)?$/i;
+  var CHAT_PATH_RE = /\/chat\/(?:completion(s)?|continue)$/i;
   var NOT_CHAT_RE = /pow_challenge|telemetry|event|history|session|list|feedback|report/i;
 
   function isChatCall(method, url) {

@@ -37,6 +37,9 @@ internal class ContinuationTail(
     }
 
     private fun mayStillOverlap(previous: String, prefix: String): Boolean {
+        // Some continuation snapshots repeat the entire previous answer, not
+        // merely its last 4000 characters. Buffer while that remains possible.
+        if (prefix.isNotEmpty() && prefix.length < previous.length && previous.startsWith(prefix)) return true
         val max = minOf(previous.length, MAX_OVERLAP)
         if (prefix.isEmpty() || prefix.length >= max || max < MIN_OVERLAP) return false
         for (size in max downTo maxOf(prefix.length, MIN_OVERLAP)) {
@@ -46,6 +49,7 @@ internal class ContinuationTail(
     }
 
     private fun overlapLength(previous: String, next: String): Int {
+        if (previous.isNotEmpty() && next.startsWith(previous)) return previous.length
         val max = minOf(previous.length, next.length, MAX_OVERLAP)
         for (size in max downTo MIN_OVERLAP) {
             if (previous.regionMatches(previous.length - size, next, 0, size, ignoreCase = false)) return size

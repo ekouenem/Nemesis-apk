@@ -39,4 +39,12 @@ class ContinuationTailTest {
         assertTrue(sent.isEmpty())
         assertEquals(previous, tail.fullText())
     }
+    @Test fun fullLongSnapshotIsNotDuplicated() {
+        val previous="abcd0123".repeat(5000)
+        val sent=mutableListOf<String>(); val tail=ContinuationTail(previous,sent::add)
+        tail.append(previous.substring(0,20000)); assertTrue(sent.isEmpty())
+        tail.append(previous.substring(20000)+" new")
+        tail.finish(); assertEquals(" new",sent.joinToString("")); assertEquals(previous+" new",tail.fullText())
+    }
+
 }

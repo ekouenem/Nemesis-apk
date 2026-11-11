@@ -408,7 +408,7 @@ class MainActivity : Activity() {
             body.addView(action("Annuler",Color.TRANSPARENT,muted) { dialog.dismiss() })
         }
     }
-    private fun bubble(role:String, text:String): View {
+    private fun bubble(role:String, text:String, sessionId:String?=null, messageId:Long=0L, durationMs:Long?=null, initialRating:Int=0): View {
         val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=if(role=="user") Gravity.END else Gravity.START }
         val card=column().apply {
             setPadding(dp(16),dp(13),dp(16),dp(13)); background=shape(if(role=="user") pale else white,20,if(role=="error") Color.rgb(232,187,185) else line)
@@ -416,6 +416,34 @@ class MainActivity : Activity() {
             val msg=label("",15f,if(role=="error") danger else strong).apply { setTextIsSelectable(true); setLineSpacing(dp(3).toFloat(),1f) }
             if(role=="user" || role=="error") msg.text=text else markdown.setMarkdown(msg,text)
             addView(msg)
+            if(role=="assistant" && currentMode=="chat" && sessionId!=null && messageId>0L) {
+                val footer=LinearLayout(this@MainActivity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(5),0,0) }
+                fun marker(symbol:String, description:String, click:()->Unit):TextView = label(symbol,15f,muted).apply {
+                    gravity=Gravity.CENTER; contentDescription=description; isClickable=true; isFocusable=true
+                    setOnClickListener { click() }
+                }
+                footer.addView(marker("⧉","Copier la réponse") {
+                    val clipboard=getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Réponse NEMESIS",text)); toast("Réponse copiée")
+                },LinearLayout.LayoutParams(dp(40),dp(40)))
+                var rating=initialRating
+                lateinit var good:TextView; lateinit var bad:TextView
+                fun choose(value:Int) {
+                    val next=if(rating==value) 0 else value
+                    val result=JSONObject(py.callAttr("rate_message",sessionId,messageId,next).toString())
+                    if(result.optBoolean("ok")) { rating=next; good.background=if(rating==1) shape(pale,10) else null; bad.background=if(rating== -1) shape(pale,10) else null; good.setTextColor(if(rating==1) primary else muted); bad.setTextColor(if(rating== -1) danger else muted); good.contentDescription=if(rating==1) "Bonne réponse, sélectionné" else "Bonne réponse"; bad.contentDescription=if(rating== -1) "Mauvaise réponse, sélectionné" else "Mauvaise réponse" }
+                    else toast("Évaluation non enregistrée")
+                }
+                good=marker("👍","Bonne réponse") { choose(1) }; bad=marker("👎","Mauvaise réponse") { choose(-1) }
+                good.setTextColor(if(rating==1) primary else muted); bad.setTextColor(if(rating== -1) danger else muted); good.background=if(rating==1) shape(pale,10) else null; bad.background=if(rating== -1) shape(pale,10) else null
+                footer.addView(good,LinearLayout.LayoutParams(dp(40),dp(40))); footer.addView(bad,LinearLayout.LayoutParams(dp(40),dp(40)))
+                if(durationMs!=null) {
+                    val seconds=(durationMs+500)/1000
+                    val elapsed=if(seconds<60) "${seconds} s" else "${seconds/60} min ${seconds%60} s"
+                    footer.addView(label("◷  $elapsed",11f,muted).apply { contentDescription="Temps de réponse : $elapsed"; setPadding(dp(5),0,0,0) })
+                }
+                addView(footer)
+            }
         }
         val width = (resources.displayMetrics.widthPixels * if(role=="user") .83 else .90).toInt()
         row.addView(card,LinearLayout.LayoutParams(width,-2)); return row
@@ -469,7 +497,8 @@ class MainActivity : Activity() {
             })
         }
     }
-    private fun showChat(id: String) {
+    private fun showChat(id: String) = showChat(id, null)
+    private fun showChat(id: String, preservedScrollY:Int?) {
         val session=JSONObject(py.callAttr("get_session",id).toString())
         if(!session.optBoolean("ok")) { showHome(); return }
         currentSession=id; currentMode=session.optString("mode","chat"); screen="chat"; frame()
@@ -484,7 +513,8 @@ class MainActivity : Activity() {
         }
         for(i in 0 until messages.length()) {
             val item=messages.getJSONObject(i); val role=item.optString("role"); val text=item.optString("text")
-            val view=if(role=="tool") { if(currentMode=="code") toolCard(text) else compactTool(text,currentMode) } else bubble(role,text)
+            val duration=if(item.isNull("duration_ms")) null else item.optLong("duration_ms")
+            val view=if(role=="tool") { if(currentMode=="code") toolCard(text) else compactTool(text,currentMode) } else bubble(role,text,id,item.optLong("id"),duration,item.optInt("rating"))
             if(view!=null) { body.addView(view); body.addView(gap(if(role=="tool") 5 else 12)) }
             if (role == "tool") {
                 val tool = try { JSONObject(text) } catch (_:Exception) { null }
@@ -512,24 +542,24 @@ class MainActivity : Activity() {
                     if (screen != "chat" || currentSession != id || !live.isAttachedToWindow) return
                     if (!busy || busySession != id) {
                         JobRunner.takeError()?.let { toast(it) }
-                        showChat(id); return
+                        showChat(id,scroll.scrollY); return
                     }
                     status.text="NEMESIS réfléchit" + ".".repeat(((android.os.SystemClock.uptimeMillis()/500)%4).toInt())
                     val currentMessages = try { JSONObject(py.callAttr("get_session",id).toString()).optJSONArray("messages")?.toString() ?: "[]" } catch (_:Exception) { messages.toString() }
-                    if (currentMessages != messages.toString()) { showChat(id); return }
+                    if (currentMessages != messages.toString()) { showChat(id,scroll.scrollY); return }
                     val partial = try { JSONObject(py.callAttr("live_progress",id).toString()).optString("text", "") } catch (_:Exception) { "" }
                     if (partial != last) {
-                        val nearBottom = scroll.getChildAt(0).height - scroll.height - scroll.scrollY < dp(100)
                         last = partial; live.visibility = if(partial.isBlank()) View.GONE else View.VISIBLE
-                        if(partial.isNotBlank()) markdown.setMarkdown(live,partial)
-                        if(nearBottom) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                        // Render a lightweight text preview during generation; completed answers use Markdown.
+                        // Never drag the reader down while new text arrives.
+                        live.text=partial
                     }
                     handler.postDelayed(this,350)
                 }
             }
             live.postDelayed(update,350)
         }
-        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        scroll.post { if(preservedScrollY!=null) scroll.scrollTo(0,preservedScrollY) else scroll.fullScroll(View.FOCUS_DOWN) }
         val compose=column().apply { setBackgroundColor(canvas); setPadding(dp(16),dp(6),dp(16),dp(10)) }
         if(session.optInt("uncertain")==1 && !busy) {
             compose.addView(action("Reprendre la discussion",pale,primary) { recoverChat(id,if(session.isNull("conversation_url")) "" else session.optString("conversation_url", "")) })
@@ -729,7 +759,7 @@ class MainActivity : Activity() {
     }
     private fun editPersonalization() {
         val prefs=JSONObject(py.callAttr("get_preferences").toString())
-        sheet("Instructions personnalisées", "Ces préférences seront transmises lors du prochain message. Ne renseignez pas de mots de passe.") { body, dialog ->
+        sheet("Instructions personnalisées", "Ces préférences seront transmises dans les nouvelles discussions. Ne renseignez pas de mots de passe.") { body, dialog ->
             val input=formField("Ex. Réponds en français et sois concis.",prefs.optString("custom_instructions"),multiline=true)
             body.addView(input); body.addView(gap(14))
             body.addView(action("Enregistrer",primary,white) {

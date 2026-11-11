@@ -13,10 +13,11 @@ function exercise({ label, attrs = {}, className = "", initiallyDisabled = false
     className,
     disabled: false,
     getAttribute(name) { return attrs[name] || null; },
-    getBoundingClientRect() { return hidden ? { width: 0, height: 0 } : { width: 88, height: 32 }; },
+    getBoundingClientRect() { return hidden ? { width: 0, height: 0 } : { left: 10, top: 20, width: 88, height: 32 }; },
+    scrollIntoView() {},
     click() { clicks++; },
   };
-  const win = { getComputedStyle() { return { display: "block", visibility: "visible", opacity: "1" }; } };
+  const win = { devicePixelRatio: 2, getComputedStyle() { return { display: "block", visibility: "visible", opacity: "1" }; } };
   const doc = { querySelectorAll(selector) {
     return selector.includes("button") || selector.includes("continue") ? [button] : [];
   } };
@@ -36,6 +37,8 @@ function exercise({ label, attrs = {}, className = "", initiallyDisabled = false
     state = JSON.parse(adapter.continueAvailable());
   }
   if (!state.enabled) throw new Error(`enabled continuation control was not recognized: ${label}`);
+  const target = JSON.parse(adapter.continueTarget());
+  if (!target.ok || target.x !== 54 || target.y !== 36 || target.ratio !== 2) throw new Error('invalid native tap target');
   if (!JSON.parse(adapter.continueGeneration()).ok || clicks !== 1) throw new Error(`continuation control was not clicked exactly once: ${label}`);
 }
 
