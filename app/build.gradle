@@ -1,0 +1,25 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python'
+}
+android {
+    namespace 'com.nemesis.apk'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.nemesis.apk'
+        minSdk 26
+        targetSdk 28
+        versionCode 1
+        versionName '0.1.0-prototype'
+        ndk { abiFilters 'x86', 'armeabi-v7a' }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+}
+chaquopy {
+    defaultConfig {
+        version = '3.11'
+        pip { install 'requests==2.32.4' }
+    }
+}
