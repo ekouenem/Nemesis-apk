@@ -1,41 +1,74 @@
-# NEMESIS Android — développement
+# NEMESIS Android
 
-Application Android native utilisant Python 3.11 (Chaquopy), avec le provider et le parseur issus de NEMESIS-AGENT (commit `55e8daffb27c6da23274b86cf63d1524b312edb7`, licence MIT : voir `LICENSE-NEMESIS`). Le moteur complet n’est pas encore intégré ; les outils sont adaptés progressivement pour Android.
+NEMESIS est une application Android native qui réunit, dans une seule APK, une interface de conversation et une adaptation du moteur d’agent Python de NEMESIS-AGENT, reliées à une copie intégrée de NemApi-Apk. Le seul fournisseur intégré actuellement est **DeepSeek** : l’utilisateur doit s’y connecter dans l’application. L’API locale ne rend pas le modèle autonome ni utilisable hors ligne.
 
-## État actuel
+> **Préversion : v0.1.0-beta.4.** Elle est utilisable pour les essais, mais les limites ci-dessous restent importantes. L’architecture réelle est native Kotlin + Python/Chaquopy + NemApi/WebView, et non l’architecture Kotlin/Koog décrite dans un ancien plan provisoire.
 
-- Une seule APK contient NEMESIS et la variante NemApi-Apk. Le moteur DeepSeek démarre avec l’application ; son interface de connexion et ses paramètres s’ouvrent dans NEMESIS. Les données WebView et les cookies restent dans le stockage privé Android. La connexion peut devoir être renouvelée.
-- NemApi gère une URL DeepSeek distincte par discussion, sans renvoyer tout l’historique. En cas d’état incertain après une requête, la saisie reste disponible mais un bouton permet de reprendre explicitement après vérification de l’URL. Le message précédent n’est jamais renvoyé automatiquement. Même lorsque l’URL est déjà ouverte, NemApi attend que le champ de saisie soit utilisable ; avant l’envoi, une vérification atomique de l’URL évite une soumission dans une autre discussion. Une page indisponible, une vérification de sécurité ou une évolution de DeepSeek peuvent toujours empêcher l’envoi.
-- La passerelle HTTP intégrée écoute uniquement sur loopback, sur un port aléatoire avec un secret aléatoire en mémoire par processus. Toutes les routes demandent ce secret ; les routes d’administration ne sont pas exposées dans cette configuration. Ce mécanisme réduit l’exposition entre applications mais n’est pas une garantie face à un appareil compromis.
-- Interface native claire, barre latérale, Markdown, streaming sans suivi forcé du défilement et bouton de retour en bas ; les réponses Chat possèdent copie, évaluation locale et durée de génération lorsque disponible. Cartes d’outils détaillées en Code et discrètes en Work, notification de mémoire en Chat, pièces jointes via le sélecteur Android. La recherche DuckDuckGo peut demander une vérification anti-robot, signalée comme erreur ; `web_fetch` accepte les URL HTTPS publiques sans redirection.
-- Chat possède uniquement les outils de mémoire. Work et Code disposent aussi des outils de skills et MCP, ainsi que de la recherche, des fichiers et du SSH ; Code inclut des outils supplémentaires. Le moteur d’origine n’est pas repris intégralement : sous-agents et patch multi-fichiers restent absents.
-- Les 18 skills embarqués (documents, présentation, tableur, design Android et projets) sont copiés sans écrasement dans `Nemesis/Skills` après autorisation de stockage. L’agent peut les lister, lire leurs fichiers, les copier sur SSH et installer un skill public depuis GitHub. Voir `SKILLS-SOURCES.md` pour les versions et licences ; les contenus tiers sont non fiables et leurs dépendances ne sont pas toutes embarquées.
-- MCP : transport Streamable HTTP (JSON ou SSE en réponse) et stdio via le serveur SSH configuré, pour `initialize`, `tools/list` et `tools/call`. Des serveurs se configurent dans les paramètres ; le jeton Bearer HTTP est protégé par Android Keystore. OAuth interactif, l’ancien transport HTTP+SSE, ressources/prompts MCP et les demandes serveur avancées ne sont pas encore pris en charge. HTTP non chiffré expose les données et doit être réservé aux tests locaux.
-- Le nombre de tours d’outils n’est plus plafonné. Un bouton d’arrêt est proposé pendant la tâche ; l’interruption d’une requête déjà soumise peut laisser la conversation incertaine et une commande distante peut continuer. Des délais de connexion et de chargement du navigateur demeurent ; une tâche sans progression peut être arrêtée manuellement.
-- La mémoire est active par défaut et peut être désactivée. Les souvenirs sont stockés localement, visibles, modifiables et supprimables dans les paramètres ; ils sont transmis au début des nouvelles discussions. L’agent peut créer, modifier et supprimer des souvenirs, mais sa décision de les enregistrer dépend du modèle et n’est pas garantie.
-- Les outils Work et Code s’exécutent sans confirmation individuelle, y compris les commandes SSH : un contenu malveillant ou une mauvaise commande peut modifier ou supprimer des données. N’utiliser qu’un serveur de confiance et sauvegarder les données. Le filtrage de chemin local et l’empreinte SSH ne constituent pas une isolation complète.
-- Sous Android 8.1, après permission système de stockage, les fichiers locaux sont dans `Stockage interne/Nemesis/Work/<id-discussion>` ou `Nemesis/Code/<id-discussion>`. Les fichiers des anciennes versions restent dans leur espace privé. Si la permission est refusée, le stockage privé sert de repli. Le stockage partagé peut être lu par les autres applications autorisées et peut survivre à la désinstallation.
-- Le serveur SSH est distinct du stockage Android. À la première connexion, sa clé est mémorisée automatiquement puis toute modification est refusée : cette première connexion non vérifiée reste vulnérable à une usurpation sur un réseau compromis. Chaque commande démarre un nouveau shell. `download_file(remote_path,path)` transfère via SFTP dans la discussion (dans la limite du stockage disponible), avec vérification de l’empreinte SHA256. Les fichiers PDF et images disposent d’un aperçu intégré ; DOCX est affiché en texte sans sa mise en forme ; les autres formats pris en charge peuvent être exportés.
-- Un service de premier plan avec notification maintient NemApi disponible, et les tâches ne dépendent plus du cycle de vie de l’écran. Une surveillance redémarre le serveur HTTP local arrêté sur le même port et le navigateur après perte de son processus. Une tâche Android périodique tente également de relancer le service lorsqu’il a été arrêté ; Android peut différer ou refuser cette relance. Android, la batterie, le réseau, un arrêt forcé ou une modification du site DeepSeek peuvent néanmoins interrompre une tâche : aucune garantie de disponibilité permanente ni de reprise automatique après mort du processus. La reprise d’une génération longue utilise le bouton DeepSeek et capture sa route de continuation, mais son fonctionnement de bout en bout reste à confirmer après les blocages et CAPTCHA rencontrés durant les essais. Une réponse vide déclenche une lecture de secours du navigateur ; l’échec peut encore être signalé si la page ne présente pas de nouvelle réponse. Une session incertaine doit être reprise explicitement.
-- Le prompt système, les préférences et la mémoire sont transmis au début d’une nouvelle discussion uniquement. En reprenant une URL existante, ils ne sont pas renvoyés ; les modifications ultérieures de préférences et de mémoire ne s’appliquent donc pas automatiquement aux discussions déjà créées. Leur respect dépend du modèle et ne constitue pas une garantie de sécurité.
-- Le sélecteur accepte images et fichiers (PDF, documents et autres), jusqu’à quatre pièces jointes de 8 Mo chacune. Les fichiers sont transmis à DeepSeek sans conversion ; leur acceptation et leur analyse dépendent des formats pris en charge par le service. Un échec de dépôt ou de téléversement observé est signalé, mais le suivi comporte une heuristique après silence ou délai : il ne prouve pas toujours que DeepSeek a bien reçu le fichier. Vérifiez la pièce jointe et la réponse, surtout pour les formats non testés.
+## Installation
 
-## Build et tests
+- [Télécharger l’APK beta.4](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.4/NEMESIS-v0.1.0-beta.4.apk) · [Notes de version](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.4)
+- Android minimum déclaré : **8.0 / API 26** ; cible de terrain : Android 8.1. Architectures incluses : `armeabi-v7a` et `x86`, 32 bits. Les essais Android ont été faits sur émulateur **x86 Android 8.1**, pas sur appareil ARM ; la présence d’une ABI n’est pas une validation matérielle.
+- APK **debug**, pas une signature de production. La beta.4 est signée avec la même clé de développement que la beta.3 : l’installation par-dessus devrait préserver les données. Sauvegardez-les au préalable. Si la clé de signature est perdue, une future mise à jour pourra nécessiter une réinstallation et entraîner la perte des données privées.
+- SHA-256 : `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce`.
 
-JDK 17/21, Android SDK 34, Python 3.11 : `./gradlew :app:assembleDebug`. Pour les tests de la copie NemApi-Apk : `cd nemapi && ./gradlew :app:testDebugUnitTest`. Tests Python : `PYTHONPATH=app/src/main/python python -m unittest discover -s tests -v`. Sur une machine de 2 cœurs, `--no-daemon --max-workers=1` limite la consommation mémoire de Gradle.
+Ouvrez l’application et configurez DeepSeek dans son interface intégrée. La session est conservée dans le stockage privé de la WebView quand Android le permet, mais une reconnexion ou un CAPTCHA peuvent être demandés. La connexion Google automatique du compte Android n’est pas intégrée : OAuth Google interdit l’utilisation d’une WebView embarquée et le navigateur système ne partage pas automatiquement ses cookies avec celle-ci.
 
-Installer avec `adb install -r` pour conserver les données : ne pas désinstaller NEMESIS ni effacer son stockage si la session DeepSeek doit être conservée. Une sauvegarde des cookies et du stockage WebView est sensible et ne doit jamais être placée dans Git. Sur un appareil non rooté, les données privées d’une autre application ne peuvent pas être copiées automatiquement.
+## Utilisation
 
-Un test Android instrumenté facultatif vérifie SSH/SFTP : il est ignoré sans paramètres et ne remplace pas une configuration SSH existante. Pour démarrer un serveur Linux de test isolé dans un Codespace doté de Docker, lancer `bash scripts/start-test-ssh.sh`. Depuis l’émulateur, l’hôte est `10.0.2.2`, le port `22279`, l’utilisateur `nemesis` ; le mot de passe et la clé du serveur sont dans `/workspaces/.nemesis-private/ssh-sandbox` (hors Git). Le dossier distant persistant est `/workspace`. Ce conteneur est réservé aux tests et n’est pas un environnement Termux embarqué dans l’APK. Ne pas exposer son port publiquement. L’isolation Docker n’est pas une garantie de sécurité absolue.
+- **Chat** : conversations, streaming, Markdown, mémoire, copie et appréciation locale des réponses ; la durée est affichée lorsqu’elle est disponible. Le bouton **↓** ramène en bas si du contenu se trouve plus bas. Le streaming ne force pas le défilement pendant la lecture.
+- **Work** : recherche et lecture Web, fichiers, SSH, skills et MCP, avec cartes d’outils discrètes. Le prompt vise des explications adaptées au profil.
+- **Code** : outils Work et outils de programmation supplémentaires, avec cartes dépliables. L’intégration du moteur d’origine est **partielle** : notamment, les sous-agents et le patch multi-fichiers ne sont pas disponibles.
+- Le bouton **+** du composeur ouvre le sélecteur de fichiers Android. Jusqu’à quatre pièces jointes de 8 Mo chacune sont transmises comme fichiers ; leur prise en charge dépend de DeepSeek. Le suivi de téléversement comprend une heuristique : il ne prouve pas toujours la bonne réception.
+- La mémoire est activée par défaut et contrôlable dans les paramètres. Sa création automatique dépend du modèle. Prompt système, préférences et mémoire sont transmis au début d’une nouvelle discussion ; ils ne sont pas réinjectés automatiquement lors d’une reprise par URL.
+- Les outils Work/Code n’exigent pas de confirmation individuelle et n’ont pas de plafond fixe de tours. Le bouton d’arrêt ne garantit pas l’interruption d’une requête déjà soumise ou d’une commande SSH déjà lancée.
 
-Android 8.1 x86 a été testé dans l’émulateur. L’APK inclut `armeabi-v7a`, mais cette ABI n’a pas encore été testée sur un appareil représentatif. Le moteur automatise l’interface Web DeepSeek ; il peut cesser de fonctionner si celle-ci change et l’utilisation peut être soumise aux conditions du fournisseur. La copie NemApi-Apk conserve sa licence dans `nemapi/LICENSE-UPSTREAM`.
+## Sessions DeepSeek et fiabilité
 
-## Version de test et limites
+Chaque discussion peut reprendre son URL DeepSeek sans renvoyer tout son historique. La beta.4 attend que le composeur soit utilisable, même si la bonne URL est déjà ouverte, et vérifie l’URL au moment de l’envoi. Elle ne rejoue pas automatiquement un message dont la soumission est incertaine ; si nécessaire, vérifiez la conversation et utilisez la reprise explicite.
 
-La release `v0.1.0-beta.4` fournit une APK **debug**, signée avec la clé de développement de l’environnement de compilation, pas une signature de production. Une mise à jour ultérieure exige la même clé ; conservez-la de manière sûre avant de détruire l’environnement, ou une réinstallation pourra être nécessaire et supprimer les données locales. Ne publiez jamais cette clé.
+Le champ a été trouvé sur la page connectée stabilisée et une course de préparation a été corrigée. Cela ne prouve pas que tous les cas `input_missing` observés sur d’autres appareils sont résolus. Une modification du site, le réseau ou un challenge peuvent empêcher l’envoi. La continuation automatique des réponses longues a été améliorée mais **n’a pas été validée de bout en bout** : ne considérez pas une réponse ou un script incomplet comme terminé.
 
-La validation Android a été effectuée sur un émulateur Android 8.1 **x86 32 bits**. L’APK contient aussi `armeabi-v7a`, mais aucun appareil ARM 32 bits n’a encore été testé. Les fichiers `Nemesis/Skills` sont dans le stockage partagé lorsque la permission est accordée : selon Android, d’autres applications autorisées peuvent les modifier. Traitez les skills et résultats MCP comme non fiables, en particulier avant d’exécuter leurs scripts ; les outils SSH et MCP n’affichent pas de confirmation et peuvent modifier les données accessibles au compte configuré.
+NemApi communique avec l’agent via une passerelle HTTP interne sur loopback, port aléatoire et secret en mémoire. Cela réduit l’exposition entre applications mais ne protège pas contre un appareil compromis. Le service de premier plan affiche une notification sur Android 8.1. Android peut interrompre ou différer les tâches malgré les mécanismes de surveillance ; la disponibilité permanente et la reprise après mort du processus ne sont pas garanties.
 
-La mise à niveau renomme l’ancien dossier partagé `NEMESIS` en `Nemesis` si possible, sans écraser les fichiers existants. Si les deux dossiers existent déjà, les fichiers manquants sont copiés et les originaux conservés ; les conflits ne sont pas écrasés.
+## Fichiers, SSH, skills et MCP
 
-La connexion Google automatique de l’appareil n’est pas intégrée : Google interdit son OAuth dans une WebView embarquée et la session du navigateur système ne se partage pas automatiquement avec celle de NemApi. La notification du service de premier plan reste présente sur Android 8.1 : la masquer tout en conservant le même niveau de service n’est pas garanti par Android.
+Avec l’autorisation de stockage, les espaces sont sous `Stockage interne/Nemesis/Work/<id-discussion>` ou `Nemesis/Code/<id-discussion>` ; sinon, stockage privé de repli. Le dossier partagé peut être accessible aux autres applications autorisées et survivre à la désinstallation. La migration depuis l’ancien dossier `NEMESIS` évite l’écrasement des conflits.
+
+SSH est distinct du stockage Android. La clé du serveur est mémorisée à la première connexion (TOFU), puis une modification est refusée. La première connexion n’est pas protégée contre une usurpation. Les commandes s’exécutent avec les droits du compte configuré ; chaque commande démarre un nouveau shell. Le transfert SFTP vers la discussion vérifie le SHA-256. Aperçu intégré pour PDF et images ; DOCX en texte sans mise en forme. Utilisez un environnement de confiance et des sauvegardes.
+
+Dix-huit skills tiers sont embarqués puis copiés sans écrasement vers `Nemesis/Skills`, après autorisation. Ils sont listables, lisibles et installables depuis GitHub ; leurs scripts et dépendances ne sont pas tous fournis. Consultez [SKILLS-SOURCES.md](SKILLS-SOURCES.md) et les licences tierces. Les contenus de skills et les résultats MCP sont non fiables, en particulier avant exécution.
+
+MCP prend en charge Streamable HTTP (JSON ou SSE en réponse) et stdio via SSH pour `initialize`, `tools/list` et `tools/call` ; le jeton Bearer HTTP est protégé par Android Keystore. OAuth interactif, ancien HTTP+SSE, ressources/prompts et requêtes serveur avancées ne sont pas pris en charge. HTTP sans TLS expose les données.
+
+## Architecture et développement
+
+- `app/src/main/java/com/nemesis/apk/` : interface native, tâches, service, SSH et ponts MCP.
+- `app/src/main/python/` : boucle d’agent, fournisseur NemApi, mémoire, outils Web, skills et MCP ; Python 3.11 embarqué via Chaquopy.
+- `nemapi-embedded/` et `nemapi/` : intégration Android et copie de NemApi ; adaptateur DeepSeek dans `nemapi/app/src/main/assets/js/adapter-deepseek.js`.
+- `tests/` : tests Python et JavaScript ; `app/src/androidTest/` : tests Android instrumentés.
+- [CONTEXTE.md](CONTEXTE.md) : état et reprise ; [AGENTS.md](AGENTS.md) : consignes de travail.
+
+### Compilation et tests
+
+JDK 17 ou 21, Android SDK 34 et Python 3.11. L’environnement utilisé pour beta.4 disposait de Java 21 et du SDK sous `/workspaces/android-sdk`.
+
+```bash
+export ANDROID_HOME=/workspaces/android-sdk
+export JAVA_HOME=/usr/local/sdkman/candidates/java/21.0.13.0+2-ms
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+./gradlew --no-daemon --max-workers=1 :app:assembleDebug :app:assembleDebugAndroidTest
+PYTHONPATH=app/src/main/python python3 -m unittest discover -s tests -v
+node tests/test_provider_readiness.js
+node tests/test_adapter_dom.js
+node nemapi/tools/test-hook.js
+node nemapi/tools/test-continue.js
+(cd nemapi && ./gradlew --no-daemon --max-workers=1 :app:testDebugUnitTest)
+```
+
+Ces chemins Java et SDK sont propres au Codespace documenté : adaptez-les si nécessaire. L’APK est générée dans `app/build/outputs/apk/debug/`. Installer avec `adb install -r` ; **ne pas désinstaller ni effacer les données** pour conserver la session. Les sauvegardes de cookies, clés et sessions sont sensibles et doivent rester hors Git.
+
+Validation beta.4 : 44 tests Python, tests JavaScript, unitaires NemApi et trois tests Android de disponibilité, interface et régression. Un test réel avec trois courts messages a couvert deux discussions puis la reprise de la première après indisponibilité temporaire simulée du champ. Les tests réels ne doivent pas être relancés en masse : ils sollicitent le compte DeepSeek.
+
+## Licences et crédits
+
+Le provider et le parseur adaptés de NEMESIS-AGENT proviennent du commit `55e8daffb27c6da23274b86cf63d1524b312edb7`, licence MIT : voir [LICENSE-NEMESIS](LICENSE-NEMESIS). La copie NemApi conserve sa licence dans `nemapi/LICENSE-UPSTREAM`. Pour les skills tiers, consulter [SKILLS-SOURCES.md](SKILLS-SOURCES.md) et `third_party/`. Les conditions d’utilisation des services externes restent applicables.
