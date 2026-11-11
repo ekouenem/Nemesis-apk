@@ -120,8 +120,11 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                 }
             } catch (t: Throwable) {
                 if (running) NemLog.w("api", "accept : ${t.message}")
+                if(serverSocket?.isClosed != false) break
+                Thread.sleep(200)
             }
         }
+        running=false
     }
 
     // ---------- HTTP minimal ----------
@@ -600,6 +603,7 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                     )
                 ).toString()
 
+        var submissionAttempted = false
         var firstDeltaAt = 0L
         var chunks = 0
         var chars = 0
@@ -625,6 +629,7 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                         writeSse(chunk(JSONObject().put("content", d), null))
                     },
                     shouldCancel = { cancelled.get() },
+                    onSubmitAttempt = { submissionAttempted = true },
                     onKeepAlive = {
                         try { out.write(": keep-alive\n\n".toByteArray(Charsets.UTF_8)); out.flush() }
                         catch (_: Throwable) { cancelled.set(true) }
@@ -646,12 +651,12 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
             com.nemap.android.core.WebStore.noteRequest("deepseek", promptChars.toLong(), chars.toLong(), ok = true)
         } catch (e: NemApiException) {
             AppState.noteError(e.code)
-            writeSse(errorJson(e.code, e.message))
+            writeSse(JSONObject(errorJson(e.code, e.message)).put("not_submitted", !submissionAttempted).toString())
             writeSse("[DONE]")
             NemLog.w("api", "stream interrompu : ${e.code}")
         } catch (t: Throwable) {
             AppState.noteError("upstream_error")
-            writeSse(errorJson("upstream_error", t.message ?: "Erreur interne"))
+            writeSse(JSONObject(errorJson("upstream_error", t.message ?: "Erreur interne")).put("not_submitted", !submissionAttempted).toString())
             writeSse("[DONE]")
         }
     }

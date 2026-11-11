@@ -74,11 +74,12 @@ object DeepSeek {
         messages: List<Msg>,
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean = { false },
-        onKeepAlive: () -> Unit = {}
+        onKeepAlive: () -> Unit = {},
+        onSubmitAttempt: () -> Unit = {}
     ): String {
         if (!AppState.busy.compareAndSet(false, true)) throw NemApiException.busy()
         try {
-            return run(messages, onDelta, shouldCancel, onKeepAlive)
+            return run(messages, onDelta, shouldCancel, onKeepAlive, onSubmitAttempt)
         } finally {
             AppState.busy.set(false)
         }
@@ -88,7 +89,8 @@ object DeepSeek {
         messages: List<Msg>,
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean,
-        onKeepAlive: () -> Unit
+        onKeepAlive: () -> Unit,
+        onSubmitAttempt: () -> Unit
     ): String {
         if (!com.nemap.android.web.WebViewHost.isCreated) {
             throw NemApiException.notReady("Le navigateur intégré n'est pas ouvert : ouvre l'app NemApi puis l'onglet du provider.")
@@ -136,6 +138,8 @@ object DeepSeek {
         // Keep a baseline so DOM fallback cannot return the previous turn as a new answer.
         val beforeSubmit = Engine.adapter("answer")
         // 3) envoyer
+        // Once the submit call starts its outcome may be unknown even on error.
+        onSubmitAttempt()
         val sub = Engine.adapter("submit")
         if (!sub.optBoolean("ok")) {
             throw NemApiException(
@@ -200,11 +204,12 @@ object DeepSeek {
             sent++
         }
 
+        try { Engine.evalJs("window.__napUploadReset && window.__napUploadReset()") } catch (_: Throwable) {}
         val commit = Engine.adapter("attachCommit", null, 30_000)
         if (!commit.optBoolean("ok")) {
-            NemLog.w("dom", "dépôt des pièces jointes refusé (${commit.optString("reason")}) → envoi du texte seul")
             Engine.adapter("attachBegin")
-            return
+            throw NemApiException(NemApiException.PROVIDER_NOT_CONFIGURED,
+                "La pièce jointe n’a pas été acceptée par DeepSeek (${commit.optString("reason")}) ; message non envoyé.")
         }
         // `in_input` retombe souvent à 0 : la page vide l'input dès qu'elle a lu
         // les fichiers. C'est `wanted` qui donne le nombre de pièces transmises.
@@ -232,10 +237,6 @@ object DeepSeek {
      * traitée en local). Le DOM ne sert plus que de secours.
      */
     private suspend fun waitUpload(shouldCancel: () -> Boolean) {
-        try {
-            Engine.evalJs("window.__napUploadReset && window.__napUploadReset()")
-        } catch (_: Throwable) {
-        }
         val t0 = System.currentTimeMillis()
         var lastNote = ""
         while (System.currentTimeMillis() - t0 < UPLOAD_MS) {
@@ -251,6 +252,7 @@ object DeepSeek {
 
             if (seen && active == 0) {
                 val ok = st.isNull("ok") || st.optBoolean("ok", true)
+                if(!ok) throw NemApiException(NemApiException.UPSTREAM_ERROR, "DeepSeek a refusé le téléversement (HTTP ${st.optInt("status")}) ; message non envoyé.")
                 NemLog.i("dom", "téléversement terminé en ${elapsed} ms " +
                     "(HTTP ${st.optInt("status")}, ${st.optInt("total")} requête(s))")
                 return
@@ -344,6 +346,7 @@ object DeepSeek {
         var stableSince = 0L
         var sawStream = false
         var lastContinueCheck = 0L
+        var emptyStreamEndedAt = 0L
 
         while (true) {
             if (isCancelled(shouldCancel)) {
@@ -384,16 +387,23 @@ object DeepSeek {
                                     (if (st.isNull("errorMessage")) err else st.optString("errorMessage", err)) + ")."
                             )
                         }
-                        break
+                        if (acc.isNotBlank()) break
+                        // The network hook can finish before the page has rendered the answer,
+                        // or the provider can use a format the hook does not understand.
+                        // Wait for a *fresh* DOM answer rather than immediately reporting empty.
+                        emptyStreamEndedAt = now
+                        mode = "dom"
+                        NemLog.w("hook", "flux vide terminé → attente de la réponse DOM")
                     }
                     // flux muet mais page redevenue inactive → considéré terminé
-                    if (now - t0 > FIRST_TOKEN_MS && st.optLong("idle", 0) > STABILITY_MS) {
+                    if (mode == "hook" && now - t0 > FIRST_TOKEN_MS && st.optLong("idle", 0) > STABILITY_MS) {
                         val gen = Engine.adapter("generating").optBoolean("generating")
                         if (!gen) break
                     }
                 } else if (now - t0 > FIRST_TOKEN_MS) {
                     NemLog.w("hook", "aucun flux observé après $FIRST_TOKEN_MS ms → lecture DOM")
                     mode = "dom"
+                    emptyStreamEndedAt = now
                 }
             }
 
@@ -405,6 +415,7 @@ object DeepSeek {
                     stableSince = now
                 }
                 val gen = Engine.adapter("generating").optBoolean("generating")
+                if (emptyStreamEndedAt > 0 && lastDom.isEmpty() && now - emptyStreamEndedAt > 30_000L && !gen) break
                 if (!gen && lastDom.isNotEmpty() && now - stableSince > STABILITY_MS) {
                     if (lastDom.length > acc.length) {
                         onDelta(lastDom.substring(minOf(acc.length, lastDom.length)))
@@ -447,7 +458,10 @@ object DeepSeek {
         // fin de flux : si le hook n'a rien donné, on tente le DOM
         if (acc.isBlank()) {
             val a = Engine.adapter("answer")
-            if (isFreshDomAnswer(a, baseline)) acc = a.optString("text", "")
+            if (isFreshDomAnswer(a, baseline)) {
+                acc = a.optString("text", "")
+                if(acc.isNotBlank()) onDelta(acc)
+            }
         }
         if (acc.isBlank()) {
             throw NemApiException(

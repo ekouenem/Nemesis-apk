@@ -1,4 +1,4 @@
-import json, tempfile, unittest, socket, io
+import json, tempfile, unittest, socket, io, base64
 from pathlib import Path
 from unittest.mock import patch, Mock
 import mobile_agent as m
@@ -190,7 +190,32 @@ class MobileTests(unittest.TestCase):
         provider = Mock(); provider.url = None; provider.send_message.return_value={'success':True,'response':'OK'}
         with patch.object(m, 'SessionProvider', return_value=provider):
             result=json.loads(m.send(sid,'Lis le document',json.dumps([{'path':str(file),'name':'notes.txt','mime':'text/plain'}])))
-        self.assertTrue(result['ok']); self.assertIn('ATTACHMENT_TEST_TOKEN',provider.send_message.call_args.args[0])
+        self.assertTrue(result['ok']); part=provider.send_message.call_args.kwargs['images'][0]
+        self.assertEqual(part['type'],'file'); self.assertEqual(part['file']['filename'],'notes.txt')
+        self.assertEqual(base64.b64decode(part['file']['file_data'].split(',',1)[1]),b'ATTACHMENT_TEST_TOKEN')
+    def test_pdf_and_office_attachments_use_native_file_parts(self):
+        sid=json.loads(m.create_session('work'))['id']; folder=Path(self.temp.name)/'attachments'; folder.mkdir()
+        files=[]
+        for i,(name,mime,contents) in enumerate([('document.pdf','application/pdf',b'%PDF-1.4 sample'),('rapport.docx','application/vnd.openxmlformats-officedocument.wordprocessingml.document',b'PK sample')]):
+            path=folder/str(i); path.write_bytes(contents); files.append({'path':str(path),'name':name,'mime':mime})
+        provider=Mock(); provider.url=None; provider.send_message.return_value={'success':True,'response':'OK'}
+        with patch.object(m,'SessionProvider',return_value=provider): result=json.loads(m.send(sid,'Analyse',json.dumps(files)))
+        self.assertTrue(result['ok']); parts=provider.send_message.call_args.kwargs['images']
+        self.assertEqual([part['type'] for part in parts],['file','file'])
+        self.assertEqual([part['file']['filename'] for part in parts],['document.pdf','rapport.docx'])
+        self.assertEqual(base64.b64decode(parts[0]['file']['file_data'].split(',',1)[1]),b'%PDF-1.4 sample')
+
+    def test_uncertain_session_can_only_be_explicitly_recovered_using_valid_url(self):
+        sid=json.loads(m.create_session('work'))['id']; url='https://chat.deepseek.com/a/chat/s/testabc123'
+        with m._db() as db: db.execute('UPDATE sessions SET conversation_url=?,uncertain=1 WHERE id=?',(url,sid))
+        self.assertFalse(json.loads(m.recover_session(sid,'https://evil.example/'))['ok'])
+        self.assertEqual(json.loads(m.get_session(sid))['uncertain'],1)
+        self.assertTrue(json.loads(m.recover_session(sid))['ok']); self.assertEqual(json.loads(m.get_session(sid))['uncertain'],0)
+        sid2=json.loads(m.create_session('chat'))['id']
+        with m._db() as db: db.execute('UPDATE sessions SET uncertain=1 WHERE id=?',(sid2,))
+        self.assertFalse(json.loads(m.recover_session(sid2))['ok'])
+        self.assertTrue(json.loads(m.recover_session(sid2,url))['ok'])
+
     def test_attachment_escape_is_rejected(self):
         sid=json.loads(m.create_session('chat'))['id']; path=Path(self.temp.name)/'private'; path.write_text('secret')
         result=json.loads(m.send(sid,'lis',json.dumps([{'path':str(path),'name':'x','mime':'text/plain'}])))
@@ -226,6 +251,14 @@ class MobileTests(unittest.TestCase):
         with patch.object(provider._session, 'post', return_value=response):
             with self.assertRaises(RuntimeError): provider._post_cancellable({'messages':[]},None)
         self.assertEqual(json.loads(m.get_session(sid))['uncertain'],1)
+
+    def test_stream_error_before_submit_does_not_lock_session(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
+        response.iter_lines.return_value=['data: '+json.dumps({'error':{'message':'fichier refusé'},'not_submitted':True}),'data: [DONE]']
+        with patch.object(provider._session,'post',return_value=response):
+            with self.assertRaises(m._BeforeSubmitError): provider._post_cancellable({'messages':[]},None)
+        self.assertEqual(json.loads(m.get_session(sid))['uncertain'],0)
 
     def test_navigation_failure_before_submit_does_not_lock_session(self):
         sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)

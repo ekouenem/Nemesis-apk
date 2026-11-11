@@ -41,6 +41,10 @@ object WebViewHost {
     @Volatile var lastPageEventAt: Long = 0L
         private set
 
+    private var lastSafeUrl: String = "https://chat.deepseek.com/"
+    private fun rememberSafeUrl(url:String?) {
+        try { val u=java.net.URI(url ?: ""); if(u.scheme=="https" && u.host=="chat.deepseek.com" && u.port == -1 && u.userInfo==null) lastSafeUrl=url!! } catch(_:Exception) {}
+    }
     private var container: ViewGroup? = null
     private var appContext: Context? = null
 
@@ -96,6 +100,7 @@ object WebViewHost {
                 pageLoading = true
                 lastPageEventAt = android.os.SystemClock.elapsedRealtime()
                 currentUrl = url ?: currentUrl
+                rememberSafeUrl(url)
                 AppState.pageUrl = currentUrl
                 // repli si le document-start n'est pas supporté par le provider WebView
                 view?.evaluateJavascript(Engine.asset("js/hook.js"), null)
@@ -106,10 +111,24 @@ object WebViewHost {
                 pageLoading = false
                 lastPageEventAt = android.os.SystemClock.elapsedRealtime()
                 currentUrl = url ?: currentUrl
+                rememberSafeUrl(url)
                 AppState.pageUrl = currentUrl
                 view?.evaluateJavascript(Engine.asset("js/hook.js"), null)
                 view?.evaluateJavascript(Engine.asset("js/adapter-deepseek.js"), null)
                 NemLog.i("dom", "page chargée : ${hostOf(currentUrl)}")
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                if(view != null && view === webView) {
+                    NemLog.w("dom", "Processus WebView interrompu : reconstruction du navigateur")
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    webView=null; pageLoading=false; currentUrl=lastSafeUrl
+                    try { view.destroy() } catch (_:Throwable) {}
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try { appContext?.let { ensure(it) } } catch(e:Throwable) { NemLog.w("dom", "Reconstruction WebView impossible : ${e.message}") }
+                    }
+                }
+                return true
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false

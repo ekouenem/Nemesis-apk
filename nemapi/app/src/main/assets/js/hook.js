@@ -324,7 +324,7 @@
     UP.endedAt = Date.now();
     UP.ms = UP.startedAt ? UP.endedAt - UP.startedAt : 0;
     UP.status = status || 0;
-    UP.ok = !failed && (!status || status < 400);
+    UP.ok = UP.ok !== false && !failed && (!status || status < 400);
   }
 
   window.__napUpload = function () {

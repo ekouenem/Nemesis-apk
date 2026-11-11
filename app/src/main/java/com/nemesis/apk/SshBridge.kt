@@ -39,14 +39,16 @@ object SshBridge {
     fun save(host: String, port: Int, user: String, fingerprint: String, password: String) {
         require(host.isNotBlank() && user.isNotBlank() && port in 1..65535) { "Hôte, port ou utilisateur invalide" }
         val fp = fingerprint.trim()
-        require(fp.startsWith("SHA256:") && fp.length in 30..90) { "Empreinte SHA256 du serveur requise" }
+        require(fp.isEmpty() || (fp.startsWith("SHA256:") && fp.length in 30..90)) { "Empreinte SHA256 invalide" }
+        val previous=details()
+        val retained=if(fp.isNotEmpty()) fp.trimEnd('=') else if(previous.optString("host")==host.trim() && previous.optInt("port")==port) previous.optString("fingerprint") else ""
         require(password.isNotEmpty()) { "Mot de passe SSH requis" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.iv + cipher.doFinal(password.toByteArray(Charsets.UTF_8))
         prefs().edit().putString("host",host.trim()).putInt("port",port).putString("user",user.trim())
-            .putString("fingerprint",fp.trimEnd('='))
-            .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
+            .putString("fingerprint",retained)
+            .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit()
     }
     private fun password(): String {
         val raw = Base64.decode(prefs().getString("secret", ""), Base64.NO_WRAP)
@@ -57,15 +59,17 @@ object SshBridge {
     }
     fun clear() { check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." } }
 
-    internal fun connect(): com.jcraft.jsch.Session {
+    @Synchronized internal fun connect(): com.jcraft.jsch.Session {
         val config = details()
         require(config.optBoolean("configured")) { "Configurez d'abord un serveur SSH ou Termux dans Réglages." }
         val fingerprint = config.getString("fingerprint").trimEnd('=')
         val jsch = JSch()
+        var observedFingerprint = ""
         jsch.hostKeyRepository = object : HostKeyRepository {
             override fun check(host: String?, key: ByteArray?): Int {
                 if (key == null) return HostKeyRepository.CHANGED
                 val actual = "SHA256:" + Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(key), Base64.NO_WRAP or Base64.NO_PADDING)
+                if(fingerprint.isEmpty()) { observedFingerprint=actual; return HostKeyRepository.OK }
                 return if (MessageDigest.isEqual(actual.toByteArray(), fingerprint.toByteArray())) HostKeyRepository.OK else HostKeyRepository.CHANGED
             }
             override fun add(hostkey: HostKey?, ui: UserInfo?) {}
@@ -79,6 +83,11 @@ object SshBridge {
         session.setPassword(password()); session.setConfig("StrictHostKeyChecking", "yes")
         session.setConfig("PreferredAuthentications", "password,keyboard-interactive")
         session.connect(15_000)
+        if(fingerprint.isEmpty()) {
+            if(observedFingerprint.isBlank() || !prefs().edit().putString("fingerprint",observedFingerprint).commit()) {
+                session.disconnect(); throw IllegalStateException("Impossible de mémoriser la clé du serveur SSH")
+            }
+        }
         return session
     }
 

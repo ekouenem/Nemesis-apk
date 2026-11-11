@@ -57,4 +57,25 @@ class SshBridgeInstrumentedTest {
         } catch (e:Throwable) { SshBridge.clear(); throw e }
     }
 
+    @Test fun firstUsePinsAndChangedKeyIsRejected() {
+        val args=InstrumentationRegistry.getArguments()
+        assumeTrue("opt in required",args.getString("tofu_fixture")=="true")
+        val host=args.getString("test_ssh_host") ?: ""; val port=args.getString("test_ssh_port")?.toIntOrNull() ?: 0
+        val user=args.getString("test_ssh_user") ?: ""; val password=args.getString("test_ssh_password") ?: ""
+        assertTrue(host.isNotEmpty() && port>0 && user.isNotEmpty() && password.isNotEmpty())
+        val context=InstrumentationRegistry.getInstrumentation().targetContext; val prefs=context.getSharedPreferences("ssh_executor",android.content.Context.MODE_PRIVATE)
+        val backup=prefs.all.toMap(); SshBridge.init(context)
+        try {
+            SshBridge.clear(); SshBridge.save(host,port,user,"",password)
+            assertEquals("",SshBridge.details().optString("fingerprint"))
+            val result=JSONObject(SshBridge.execute("printf pin_test",20)); assertTrue(result.toString(),result.optBoolean("success"))
+            assertTrue(SshBridge.details().optString("fingerprint").startsWith("SHA256:"))
+            SshBridge.save(host,port,user,"",password); assertTrue(SshBridge.details().optString("fingerprint").startsWith("SHA256:"))
+            SshBridge.save(host,port,user,"SHA256:"+"A".repeat(43),password)
+            assertFalse(JSONObject(SshBridge.execute("printf do_not_execute",20)).optBoolean("success"))
+        } finally {
+            val e=prefs.edit().clear(); backup.forEach { (k,v) -> when(v) { is String -> e.putString(k,v); is Int -> e.putInt(k,v); is Boolean -> e.putBoolean(k,v); is Long -> e.putLong(k,v); is Float -> e.putFloat(k,v) } }; e.commit()
+        }
+    }
+
 }

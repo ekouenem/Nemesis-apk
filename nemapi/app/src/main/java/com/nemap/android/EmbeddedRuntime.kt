@@ -15,17 +15,22 @@ object EmbeddedRuntime {
         private set
     private var api: ApiServer? = null
     private var secret: String = ""
+    private var stablePort: Int = 0
 
     @JvmStatic @Synchronized fun start(context: Context) {
-        if (enabled && api?.running == true) return
         check(Looper.myLooper() == Looper.getMainLooper()) { "WebView requires main thread" }
+        if (enabled && api?.running == true) { WebViewHost.ensure(context.applicationContext); return }
         Engine.init(context.assets)
         WebStore.init(context.applicationContext)
-        val bytes = ByteArray(32); SecureRandom().nextBytes(bytes)
-        secret = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
-        val server = ApiServer(context.applicationContext, 0, secret)
+        val previousPort=stablePort
+        if(secret.isEmpty()) {
+            val bytes = ByteArray(32); SecureRandom().nextBytes(bytes)
+            secret = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
+        }
+        val server = ApiServer(context.applicationContext, previousPort, secret)
         check(server.start()) { "Impossible de démarrer le moteur privé NemApi" }
         api = server
+        stablePort=server.boundPort()
         try {
             WebViewHost.ensure(context.applicationContext)
             enabled = true

@@ -61,6 +61,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
+        com.nemap.android.EmbeddedRuntime.start(applicationContext)
         window.statusBarColor = white; window.navigationBarColor = white
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         markdown = Markwon.builder(this).usePlugin(TablePlugin.create(this)).build()
@@ -72,6 +73,11 @@ class MainActivity : Activity() {
         SshBridge.init(this); McpSecretBridge.init(this)
         val id = saved?.getString("session")
         if (id != null) { drafts[id] = saved.getString("draft", ""); showChat(id) } else showHome()
+        // Start after heavy Activity initialization so Android can dispatch the service promptly.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            RuntimeRecoveryJob.schedule(applicationContext)
+            startForegroundService(Intent(this, NemesisService::class.java))
+        }
     }
     override fun onSaveInstanceState(out: Bundle) {
         currentSession?.let { out.putString("session", it); out.putString("draft", drafts[it] ?: "") }
@@ -79,9 +85,36 @@ class MainActivity : Activity() {
     }
     private fun configureStorage() {
         val hasStorage = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        val shared = if (hasStorage) File(Environment.getExternalStorageDirectory(), "NEMESIS").absolutePath else ""
+        val shared = if (hasStorage) sharedNemesisDirectory().absolutePath else ""
         py.callAttr("configure", filesDir.absolutePath, com.nemap.android.EmbeddedRuntime.port(), com.nemap.android.EmbeddedRuntime.token(), shared)
         val skills = File(py.callAttr("skills_root").toString()); copyAssetTree("skills",skills)
+    }
+    /** Migrate the old shared directory without replacing existing user files. */
+    private fun sharedNemesisDirectory(): File {
+        val storage=Environment.getExternalStorageDirectory()
+        val old=File(storage,"NEMESIS"); val target=File(storage,"Nemesis")
+        if(old.exists() && !target.exists() && old.renameTo(target)) return target
+        // Android shared storage may be case-insensitive: both names then resolve
+        // to the same inode even though the directory listing still says NEMESIS.
+        val listed=storage.listFiles()?.map { it.name } ?: emptyList()
+        if("NEMESIS" in listed && "Nemesis" !in listed && old.exists() && target.exists()) {
+            val same=try { val a=android.system.Os.stat(old.path); val b=android.system.Os.stat(target.path); a.st_dev==b.st_dev && a.st_ino==b.st_ino } catch(_:Exception) { false }
+            if(same) {
+                val temporary=File(storage,".nemesis-rename-"+UUID.randomUUID().toString())
+                if(old.renameTo(temporary)) {
+                    if(temporary.renameTo(target)) return target
+                    temporary.renameTo(old) // retain original on a failed rename
+                }
+            }
+        }
+        if(old.isDirectory && old.canonicalPath != target.canonicalPath) {
+            fun copyMissing(source:File,dest:File) {
+                if(source.isDirectory) { if(!dest.exists()) dest.mkdirs(); source.listFiles()?.forEach { copyMissing(it,File(dest,it.name)) } }
+                else if(source.isFile && !dest.exists()) { dest.parentFile?.mkdirs(); source.copyTo(dest,overwrite=false) }
+            }
+            try { copyMissing(old,target) } catch(_:Exception) { /* keep original intact */ }
+        }
+        target.mkdirs(); return target
     }
     private fun copyAssetTree(path:String, target:File) {
         val children=assets.list(path) ?: emptyArray()
@@ -141,7 +174,7 @@ class MainActivity : Activity() {
     }
     private fun showSkills() {
         val skills=JSONArray(py.callAttr("list_skills").toString())
-        sheet("Skills disponibles", "Fichiers dans NEMESIS/Skills. Work et Code peuvent les charger, lire leurs références et installer d’autres skills GitHub.") { body, dialog ->
+        sheet("Skills disponibles", "Fichiers dans Nemesis/Skills. Work et Code peuvent les charger, lire leurs références et installer d’autres skills GitHub.") { body, dialog ->
             if(skills.length()==0) body.addView(label("Aucun skill installé.",14f,muted))
             for(i in 0 until skills.length()) {
                 val item=skills.getJSONObject(i); val name=item.optString("name")
@@ -233,7 +266,10 @@ class MainActivity : Activity() {
             frame.setBackgroundColor(canvas); host.value = frame
             val web = FrameLayout(this).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS }
             webHost = web
-            frame.addView(web, FrameLayout.LayoutParams(dp(1),dp(1),Gravity.TOP or Gravity.START))
+            // A 1dp viewport makes the provider virtualize away conversation DOM,
+            // preventing recovery from an empty/unparseable network stream.
+            // The opaque native root is layered above this full-size WebView.
+            frame.addView(web, FrameLayout.LayoutParams(-1,-1,Gravity.TOP or Gravity.START))
             setContentView(frame)
             com.nemap.android.web.WebViewHost.bindContainer(web)
         }
@@ -401,6 +437,38 @@ class MainActivity : Activity() {
         if(getSharedPreferences("display",MODE_PRIVATE).getBoolean("tool_details",false)) { detail.visibility=View.VISIBLE; arrow.text="⌃" }
         card.addView(row); card.addView(detail); return card
     }
+    private fun compactTool(raw:String, mode:String):View? {
+        val obj=try { JSONObject(raw) } catch(_:Exception) { null }
+        val name=obj?.optString("name") ?: "outil"
+        val result=obj?.optJSONObject("result")
+        val pending=result?.optBoolean("pending",false) ?: false
+        val ok=result?.optBoolean("success",false) ?: false
+        if(mode=="chat") {
+            if(name !in listOf("memory_add","memory_update","memory_delete")) return null
+            val message=if(pending) "Mise à jour de la mémoire…" else if(ok) "Mémoire mise à jour" else "Mise à jour de la mémoire impossible"
+            return label(message,12f,if(!pending && !ok) danger else muted).apply { setPadding(dp(4),dp(2),0,dp(2)) }
+        }
+        val title=when(name) {
+            "bash" -> "Exécution d’une commande"; "read_file" -> "Lecture d’un fichier"; "write_file" -> "Création d’un fichier"
+            "edit", "append" -> "Modification d’un fichier"; "download_file" -> "Récupération d’un fichier"
+            "web_search" -> "Recherche sur le Web"; "web_fetch" -> "Consultation d’une page Web"
+            "memory_add", "memory_update", "memory_delete" -> "Mise à jour de la mémoire"
+            "memory_get", "memory_search" -> "Consultation de la mémoire"
+            "skill_list", "skill_read", "skill_install", "skill_sync" -> "Utilisation d’un skill"
+            "mcp_list", "mcp_tools", "mcp_call" -> "Utilisation d’un outil connecté"
+            else -> "Utilisation d’un outil"
+        }
+        return label((if(pending) "◌  " else if(ok) "✓  " else "!  ")+title+(if(pending) "…" else if(!ok) " · échec" else ""),12f,if(!pending && !ok) danger else muted).apply { setPadding(dp(6),dp(4),dp(6),dp(4)); background=shape(pale,10) }
+    }
+    private fun recoverChat(id:String,known:String) {
+        sheet("Reprendre la discussion", "Le dernier message a peut-être été envoyé à DeepSeek. Il ne sera pas renvoyé automatiquement. Vérifiez la conversation avant de continuer.") { body, dialog ->
+            val url=formField("URL de la conversation DeepSeek",known); body.addView(url); body.addView(gap(10))
+            body.addView(action("Reprendre",primary,white) {
+                val result=JSONObject(py.callAttr("recover_session",id,url.text.toString()).toString())
+                if(result.optBoolean("ok")) { dialog.dismiss(); showChat(id) } else toast(result.optString("error"))
+            })
+        }
+    }
     private fun showChat(id: String) {
         val session=JSONObject(py.callAttr("get_session",id).toString())
         if(!session.optBoolean("ok")) { showHome(); return }
@@ -416,7 +484,8 @@ class MainActivity : Activity() {
         }
         for(i in 0 until messages.length()) {
             val item=messages.getJSONObject(i); val role=item.optString("role"); val text=item.optString("text")
-            body.addView(if(role=="tool") toolCard(text) else bubble(role,text)); body.addView(gap(12))
+            val view=if(role=="tool") { if(currentMode=="code") toolCard(text) else compactTool(text,currentMode) } else bubble(role,text)
+            if(view!=null) { body.addView(view); body.addView(gap(if(role=="tool") 5 else 12)) }
             if (role == "tool") {
                 val tool = try { JSONObject(text) } catch (_:Exception) { null }
                 val result = tool?.optJSONObject("result")
@@ -445,6 +514,7 @@ class MainActivity : Activity() {
                         JobRunner.takeError()?.let { toast(it) }
                         showChat(id); return
                     }
+                    status.text="NEMESIS réfléchit" + ".".repeat(((android.os.SystemClock.uptimeMillis()/500)%4).toInt())
                     val currentMessages = try { JSONObject(py.callAttr("get_session",id).toString()).optJSONArray("messages")?.toString() ?: "[]" } catch (_:Exception) { messages.toString() }
                     if (currentMessages != messages.toString()) { showChat(id); return }
                     val partial = try { JSONObject(py.callAttr("live_progress",id).toString()).optString("text", "") } catch (_:Exception) { "" }
@@ -461,6 +531,10 @@ class MainActivity : Activity() {
         }
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
         val compose=column().apply { setBackgroundColor(canvas); setPadding(dp(16),dp(6),dp(16),dp(10)) }
+        if(session.optInt("uncertain")==1 && !busy) {
+            compose.addView(action("Reprendre la discussion",pale,primary) { recoverChat(id,if(session.isNull("conversation_url")) "" else session.optString("conversation_url", "")) })
+            compose.addView(gap(6))
+        }
         val pending=attachments[id] ?: mutableListOf()
         if(pending.isNotEmpty()) for(item in pending.toList()) {
             compose.addView(action("Pièce jointe : ${item.optString("name")}    ×",pale,primary) { attachments[id]?.remove(item); File(item.optString("path")).delete(); showChat(id) }.apply { gravity=Gravity.START or Gravity.CENTER_VERTICAL })
@@ -469,7 +543,7 @@ class MainActivity : Activity() {
         val input=EditText(this).apply {
             hint="Écrivez à NEMESIS…"; textSize=15f; setTextColor(strong); setHintTextColor(muted); background=null
             setPadding(dp(12),dp(10),dp(12),dp(5)); minLines=1; maxLines=5; setText(drafts[id] ?: "")
-            isEnabled=!busy && session.optInt("uncertain")!=1
+            isEnabled=!busy
             addTextChangedListener(object:TextWatcher { override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){drafts[id]=s?.toString()?:""}; override fun afterTextChanged(s:Editable?){} })
         }
         box.addView(input,LinearLayout.LayoutParams(-1,-2))
@@ -498,13 +572,13 @@ class MainActivity : Activity() {
             addView(send,FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
         }
         controls.addView(sendTarget,LinearLayout.LayoutParams(dp(48),dp(48))); box.addView(controls); compose.addView(box)
-        compose.addView(label(if(session.optInt("uncertain")==1) "Conversation à vérifier avant tout nouvel envoi." else "NEMESIS peut se tromper. Vérifiez les informations importantes.",11f,muted).apply { gravity=Gravity.CENTER; setPadding(0,dp(7),0,0) })
+        compose.addView(label(if(session.optInt("uncertain")==1) "Reprenez la discussion avant d’envoyer ; le dernier message a peut-être été transmis." else "NEMESIS peut se tromper. Vérifiez les informations importantes.",11f,muted).apply { gravity=Gravity.CENTER; setPadding(0,dp(7),0,0) })
         root.addView(compose)
     }
     private fun attachmentMenu(id:String) {
         if((attachments[id]?.size ?: 0)>=4) { toast("Maximum 4 pièces jointes."); return }
         pickerSession=id
-        val intent=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*"; putExtra(Intent.EXTRA_MIME_TYPES,arrayOf("image/jpeg","image/png","image/webp","text/*","application/json","application/xml")) }
+        val intent=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }
         try { startActivityForResult(intent,302) } catch(_:Exception) { toast("Sélecteur de fichiers indisponible.") }
     }
     private fun showFiles() {
@@ -612,11 +686,11 @@ class MainActivity : Activity() {
                 var name="Pièce jointe"; contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) name=it.getString(0) ?: name }
                 var mime=contentResolver.getType(uri) ?: ""
                 if(mime=="application/octet-stream" && name.endsWith(".txt",true)) mime="text/plain"
-                if(!(mime.startsWith("text/") || mime in listOf("image/jpeg","image/png","image/webp","application/json","application/xml"))) throw IllegalArgumentException("Choisissez une image JPEG/PNG/WebP ou un fichier texte.")
+                if(mime.isBlank()) mime="application/octet-stream"
                 val dir=File(filesDir,"attachments").apply { mkdirs() }; val target=File(dir,UUID.randomUUID().toString())
                 try { contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output ->
                     val buffer=ByteArray(8192); var total=0L
-                    while(true) { val n=input.read(buffer); if(n<0) break; total+=n; if(total>8L*1024*1024 || (!mime.startsWith("image/") && total>120000)) throw IllegalArgumentException("Fichier trop volumineux."); output.write(buffer,0,n) }
+                    while(true) { val n=input.read(buffer); if(n<0) break; total+=n; if(total>8L*1024*1024) throw IllegalArgumentException("Fichier trop volumineux."); output.write(buffer,0,n) }
                 } } ?: throw IllegalArgumentException("Fichier illisible") } catch(e:Exception) { target.delete(); throw e }
                 attachments.getOrPut(id){mutableListOf()}.add(JSONObject().put("name",name).put("mime",mime).put("path",target.absolutePath))
                 if(screen=="chat" && currentSession==id) showChat(id)
@@ -705,14 +779,13 @@ class MainActivity : Activity() {
     }
     private fun sshSettings() {
         val old=SshBridge.details()
-        sheet("Environnement SSH", "Vérifiez l’empreinte par un canal de confiance. Le mot de passe est chiffré avec Android Keystore. Les fichiers distants restent séparés des fichiers locaux.") { body, dialog ->
+        sheet("Environnement SSH", "La clé du serveur est mémorisée à la première connexion. Un réseau compromis à cette étape peut usurper le serveur. Le mot de passe est chiffré avec Android Keystore.") { body, dialog ->
             val host=formField("Hôte SSH",old.optString("host","")); body.addView(host); body.addView(gap(8))
             val port=formField("Port",old.optInt("port",22).toString()); body.addView(port); body.addView(gap(8))
             val user=formField("Utilisateur",old.optString("user","")); body.addView(user); body.addView(gap(8))
-            val fp=formField("Empreinte SHA256",old.optString("fingerprint","")); body.addView(fp); body.addView(gap(8))
             val password=formField("Mot de passe SSH",secret=true); body.addView(password); body.addView(gap(14))
             body.addView(action("Enregistrer",primary,white) {
-                try { SshBridge.save(host.text.toString(),port.text.toString().toInt(),user.text.toString(),fp.text.toString(),password.text.toString()); dialog.dismiss(); toast("SSH enregistré"); showSettings() } catch(e:Exception) { toast(e.message?:"Configuration invalide") }
+                try { SshBridge.save(host.text.toString(),port.text.toString().toInt(),user.text.toString(),"",password.text.toString()); dialog.dismiss(); toast("SSH enregistré"); showSettings() } catch(e:Exception) { toast(e.message?:"Configuration invalide") }
             }); body.addView(gap(8))
             body.addView(action("Effacer la configuration",Color.TRANSPARENT,danger) { SshBridge.clear(); dialog.dismiss(); showSettings() })
         }

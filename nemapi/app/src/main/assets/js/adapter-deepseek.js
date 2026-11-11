@@ -310,15 +310,16 @@
   }
 
   function answerText() {
-    var els = messageEls();
-    if (!els.length) return { ok: false, reason: "answer_missing", text: "" };
-    var last = els[els.length - 1];
-    var main =
-      last.querySelector(".ds-assistant-message-main-content") ||
-      last.querySelector(".ds-markdown") ||
-      last.querySelector("[class*='markdown']") ||
-      last;
-    return { ok: true, text: cleanText(main.innerText || main.textContent || ""), blocks: els.length };
+    var els = messageEls(), assistants = [];
+    // The final .ds-message can be the user's just-submitted message. Never
+    // treat it as an assistant response, or count it as a fresh assistant turn.
+    for (var i = 0; i < els.length; i++) {
+      var main = els[i].querySelector(".ds-assistant-message-main-content");
+      if (main) assistants.push(main);
+    }
+    if (!assistants.length) return { ok: false, reason: "answer_missing", text: "", blocks: 0 };
+    var last = assistants[assistants.length - 1];
+    return { ok: true, text: cleanText(last.innerText || last.textContent || ""), blocks: assistants.length };
   }
 
   function generating() {
