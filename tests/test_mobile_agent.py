@@ -1,6 +1,6 @@
-import json, tempfile, unittest, socket, io, socket, io
+import json, tempfile, unittest, socket, io
 from pathlib import Path
-from unittest.mock import patch, Mock, Mock
+from unittest.mock import patch, Mock
 import mobile_agent as m
 
 class MobileTests(unittest.TestCase):
@@ -72,6 +72,21 @@ class MobileTests(unittest.TestCase):
         self.assertEqual(provider.base_url,'http://127.0.0.1:43210')
         self.assertEqual(provider._auth_headers()['Authorization'],'Bearer random-test-token')
 
+    def test_automatic_memory_guidance_is_present_in_every_mode(self):
+        for mode in ('chat','work','code'):
+            prompt=m._system_prompt(mode)
+            self.assertIn('appelle memory_add dans ce même tour',prompt)
+            self.assertIn('sans appel réussi, rien n’a été mémorisé',prompt)
+
+    def test_work_and_code_accept_memory_tool_calls(self):
+        for mode in ('work','code'):
+            sid=json.loads(m.create_session(mode))['id']; provider=Mock(); provider.url=None
+            action=json.dumps({'tool':'memory_add','parameters':{'content':'Preference '+mode}})
+            provider.send_message.side_effect=[{'success':True,'response':'```json\n'+action+'\n```'}, {'success':True,'response':'Merci'}]
+            with patch.object(m,'SessionProvider',return_value=provider):
+                self.assertTrue(json.loads(m.send(sid,'Bonjour'))['ok'])
+            self.assertTrue(any(item['content']=='Preference '+mode for item in json.loads(m.list_memory())))
+
     def test_workspace_prevents_escape_and_requires_approval(self):
         self.assertFalse(m._tool('write_file', {'path':'../../outside', 'content':'x'})['success'])
         with patch.object(m, '_approve', return_value=False):
@@ -84,27 +99,6 @@ class MobileTests(unittest.TestCase):
         sid=json.loads(m.create_session('chat'))['id']
         with m._db() as db: db.execute('UPDATE sessions SET uncertain=1 WHERE id=?',(sid,))
         self.assertFalse(json.loads(m.send(sid,'hello'))['ok'])
-
-    def test_fetch_blocks_private_and_mixed_dns(self):
-        public = (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34',443))
-        private = (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1',443))
-        for addresses in ([private], [public, private]):
-            with patch.object(m.socket, 'getaddrinfo', return_value=addresses):
-                self.assertFalse(m._tool('web_fetch', {'url':'https://example.com/'})['success'])
-        self.assertFalse(m._tool('web_fetch', {'url':'http://example.com/'})['success'])
-        self.assertFalse(m._tool('web_fetch', {'url':'https://example.com:8080/'})['success'])
-    def test_fetch_connects_to_validated_ip_not_second_dns(self):
-        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34',443))]
-        sock = Mock()
-        sock.makefile.return_value = io.BytesIO(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK')
-        context = Mock(); context.wrap_socket.return_value = sock
-        with patch.object(m.socket, 'getaddrinfo', return_value=addresses) as dns, \
-             patch.object(m.socket, 'socket', return_value=sock), \
-             patch.object(m.ssl, 'create_default_context', return_value=context):
-            result = m._tool('web_fetch', {'url':'https://example.com/path'})
-        self.assertEqual(result.get('content'), 'OK')
-        dns.assert_called_once(); sock.connect.assert_called_once_with(('93.184.216.34',443))
-        context.wrap_socket.assert_called_once_with(sock, server_hostname='example.com')
 
     def test_fetch_blocks_private_and_mixed_dns(self):
         public = (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34',443))
@@ -168,6 +162,19 @@ class MobileTests(unittest.TestCase):
             result=provider._post_cancellable({'messages':[]},None)
         self.assertEqual(result.json()['choices'][0]['message']['content'],'Bonjour en direct !')
         self.assertEqual(json.loads(m.get_session(sid))['conversation_url'],url)
+    def test_stream_progress_updates_before_completion(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        url='https://chat.deepseek.com/a/chat/s/testabc123'
+        events=[{'choices':[{'delta':{'content':'Bonjour, ceci est la première partie. '}}]}, {'choices':[{'delta':{'content':'Voici la deuxième partie en direct.'}}]}, {'nemesis_session':{'conversation_url':url,'url_captured':True}}]
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=200; response.__enter__.return_value=response;response.__exit__.return_value=None
+        response.iter_lines.return_value=['data: '+json.dumps(event) for event in events]+['data: [DONE]']
+        with patch.object(provider._session,'post',return_value=response), patch.object(m.time,'monotonic',side_effect=[1.0,1.3]), patch.object(m,'_set_live',wraps=m._set_live) as progress:
+            result=provider._post_cancellable({'messages':[]},None)
+        chunks=[call.args[1] for call in progress.call_args_list]
+        self.assertGreaterEqual(len(chunks),3)
+        self.assertTrue(chunks[-2]); self.assertGreater(len(chunks[-1]),len(chunks[-2]))
+        self.assertIn('deuxième partie',result.json()['choices'][0]['message']['content'])
+
     def test_stream_without_metadata_marks_session_uncertain(self):
         sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
         response=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
