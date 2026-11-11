@@ -7,5 +7,6 @@ class NemesisApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         EmbeddedRuntime.start(this)
+        startForegroundService(android.content.Intent(this, NemesisService::class.java))
     }
 }

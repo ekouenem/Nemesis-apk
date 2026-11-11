@@ -24,7 +24,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.Executors
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Environment
 
 class MainActivity : Activity() {
     private val white = Color.rgb(255,255,255)
@@ -36,14 +38,14 @@ class MainActivity : Activity() {
     private val muted = Color.rgb(91,111,130)
     private val line = Color.rgb(222,232,240)
     private val danger = Color.rgb(160,52,51)
-    private val worker = Executors.newSingleThreadExecutor()
     private val drafts = mutableMapOf<String,String>()
     private val attachments = mutableMapOf<String,MutableList<JSONObject>>()
     private var currentSession: String? = null
     private var currentMode = "chat"
-    private var busy = false
-    private var busySession: String? = null
-    private var pendingPreview: String? = null
+    private val busy get() = JobRunner.busySession != null
+    private val busySession get() = JobRunner.busySession
+    private val pendingPreview get() = JobRunner.preview
+    private var webHost: FrameLayout? = null
     private var screen = "home"
     private var drawer: View? = null
     private var host = FrameLayoutPlaceholder()
@@ -63,8 +65,11 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         markdown = Markwon.builder(this).usePlugin(TablePlugin.create(this)).build()
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
-        py.callAttr("configure", filesDir.absolutePath, com.nemap.android.EmbeddedRuntime.port(), com.nemap.android.EmbeddedRuntime.token())
-        ApprovalBridge.attach(this); SshBridge.init(this)
+        if (!busy) configureStorage()
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE), 501)
+        }
+        SshBridge.init(this); McpSecretBridge.init(this)
         val id = saved?.getString("session")
         if (id != null) { drafts[id] = saved.getString("draft", ""); showChat(id) } else showHome()
     }
@@ -72,7 +77,100 @@ class MainActivity : Activity() {
         currentSession?.let { out.putString("session", it); out.putString("draft", drafts[it] ?: "") }
         super.onSaveInstanceState(out)
     }
-    override fun onDestroy() { ApprovalBridge.detach(this); worker.shutdown(); super.onDestroy() }
+    private fun configureStorage() {
+        val hasStorage = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        val shared = if (hasStorage) File(Environment.getExternalStorageDirectory(), "NEMESIS").absolutePath else ""
+        py.callAttr("configure", filesDir.absolutePath, com.nemap.android.EmbeddedRuntime.port(), com.nemap.android.EmbeddedRuntime.token(), shared)
+        val skills = File(py.callAttr("skills_root").toString()); copyAssetTree("skills",skills)
+    }
+    private fun copyAssetTree(path:String, target:File) {
+        val children=assets.list(path) ?: emptyArray()
+        if (children.isEmpty()) {
+            if (!target.exists()) { target.parentFile?.mkdirs(); assets.open(path).use { input -> target.outputStream().use { input.copyTo(it) } } }
+        } else { target.mkdirs(); children.forEach { copyAssetTree("$path/$it",File(target,it)) } }
+    }
+    private fun showMcpServers() {
+        val servers=JSONArray(py.callAttr("mcp_servers").toString())
+        sheet("Serveurs MCP", "Outils distants : HTTP Streamable ou processus stdio sur le serveur SSH configuré.") { body, dialog ->
+            body.addView(action("＋  Ajouter un serveur",pale,primary) { dialog.dismiss(); addMcpServer() }); body.addView(gap(10))
+            if(servers.length()==0) body.addView(label("Aucun serveur configuré.",14f,muted))
+            for(i in 0 until servers.length()) {
+                val server=servers.getJSONObject(i); val name=server.optString("name"); val id=server.optString("id")
+                body.addView(sheetRow(name,if(server.optString("transport")=="http") "HTTP Streamable" else "Stdio via SSH") { dialog.dismiss(); mcpServerOptions(id,name) }); body.addView(gap(8))
+            }
+        }
+    }
+    private fun addMcpServer() {
+        sheet("Ajouter un serveur MCP", "Les outils MCP agissent sans confirmation. HTTP non chiffré expose les données ; ne mettez pas de secret dans une commande ou une URL.") { body, dialog ->
+            val name=formField("Nom du serveur")
+            val transport=Spinner(this).apply {
+                adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("HTTP Streamable","Stdio via SSH"))
+                contentDescription="Transport MCP"
+            }
+            val target=formField("URL HTTP(S) ou commande stdio",multiline=true)
+            val secret=formField("Jeton Bearer HTTP facultatif",secret=true)
+            body.addView(name); body.addView(gap(8)); body.addView(transport); body.addView(gap(8)); body.addView(target); body.addView(gap(8)); body.addView(secret); body.addView(gap(14))
+            body.addView(action("Enregistrer",primary,white) {
+                val kind=if(transport.selectedItemPosition==0) "http" else "ssh_stdio"
+                val result=JSONObject(py.callAttr("mcp_save",name.text.toString(),kind,target.text.toString()).toString())
+                if(result.optBoolean("ok")) {
+                    val id=result.getString("id")
+                    try { McpSecretBridge.save(id,if(kind=="http") secret.text.toString() else ""); dialog.dismiss(); showMcpServers() }
+                    catch(e:Exception) { py.callAttr("mcp_delete",id); toast("Impossible de protéger le jeton : ${e.message}") }
+                } else toast(result.optString("error","Configuration invalide"))
+            })
+        }
+    }
+    private fun mcpServerOptions(id:String,name:String) {
+        sheet(name,"Un test établit la connexion et liste les outils disponibles.") { body, dialog ->
+            body.addView(action("Tester la connexion",primary,white) {
+                dialog.dismiss(); toast("Test MCP en cours…")
+                Thread {
+                    val result=try { JSONObject(py.callAttr("mcp_test",id).toString()) } catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message) }
+                    runOnUiThread {
+                        if(!isFinishing && !isDestroyed) {
+                            val tools=result.optJSONArray("tools") ?: JSONArray()
+                            val detail=if(result.optBoolean("ok")) (0 until tools.length()).joinToString("\n") { tools.getJSONObject(it).optString("name") }.ifEmpty { "Connexion réussie, aucun outil." } else result.optString("error","Connexion impossible")
+                            sheet(if(result.optBoolean("ok")) "Connexion réussie" else "Connexion impossible",detail) { _,_ -> }
+                        }
+                    }
+                }.start()
+            }); body.addView(gap(8))
+            body.addView(action("Supprimer ce serveur",Color.TRANSPARENT,danger) { py.callAttr("mcp_delete",id); McpSecretBridge.delete(id); dialog.dismiss(); showMcpServers() })
+        }
+    }
+    private fun showSkills() {
+        val skills=JSONArray(py.callAttr("list_skills").toString())
+        sheet("Skills disponibles", "Fichiers dans NEMESIS/Skills. Work et Code peuvent les charger, lire leurs références et installer d’autres skills GitHub.") { body, dialog ->
+            if(skills.length()==0) body.addView(label("Aucun skill installé.",14f,muted))
+            for(i in 0 until skills.length()) {
+                val item=skills.getJSONObject(i); val name=item.optString("name")
+                body.addView(sheetRow(name,item.optString("description").take(140)) {
+                    dialog.dismiss(); val file=File(py.callAttr("skills_root").toString(),"$name/SKILL.md")
+                    sheet(name,"Instructions du skill — source dans le dossier Skills") { content, _ ->
+                        content.addView(label(file.readText(),13f,strong).apply { setTextIsSelectable(true) })
+                    }
+                }); body.addView(gap(8))
+            }
+        }
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode == 501 && !busy) {
+            configureStorage()
+            if (results.isEmpty() || results[0] != PackageManager.PERMISSION_GRANTED) toast("Stockage partagé indisponible : les fichiers restent privés à l’application.")
+        }
+    }
+    override fun onResume() {
+        super.onResume()
+        webHost?.let { com.nemap.android.web.WebViewHost.bindContainer(it) }
+        currentSession?.let { if (screen == "chat") showChat(it) }
+    }
+    override fun onDestroy() {
+        val oldContainer = webHost
+        if (oldContainer != null) JobRunner.whenIdle { com.nemap.android.web.WebViewHost.unbindContainer(oldContainer) }
+        super.onDestroy()
+    }
     @Deprecated("Deprecated in Java") override fun onBackPressed() {
         if (drawer != null) closeDrawer() else if (screen == "memory") showSettings() else if (screen != "home") showHome() else super.onBackPressed()
     }
@@ -129,30 +227,32 @@ class MainActivity : Activity() {
         else setSingleLine(true)
         setText(value)
     }
-    fun confirmAction(actionName:String, details:String, callback:(Boolean)->Unit) {
-        var decided=false
-        val d=sheet("Autoriser cette action ?", "NEMESIS demande votre accord avant d’agir.") { content, dialog ->
-            content.addView(label(actionName,15f,strong,true)); content.addView(gap(10))
-            content.addView(label(details,14f,strong).apply { setTextIsSelectable(true); setPadding(dp(14),dp(14),dp(14),dp(14)); background=shape(pale,14); typeface=Typeface.MONOSPACE })
-            content.addView(gap(12)); content.addView(label(if(actionName=="Commande SSH") "Cette commande sera exécutée sur le serveur SSH configuré." else "Cette action concerne l’espace de travail privé de l’application.",12f,muted)); content.addView(gap(18))
-            content.addView(action("Autoriser",primary,white) { decided=true; dialog.dismiss(); callback(true) }); content.addView(gap(8))
-            content.addView(action("Refuser",Color.TRANSPARENT,muted) { decided=true; dialog.dismiss(); callback(false) })
-        }
-        d.setOnDismissListener { if(!decided) { decided=true; callback(false) } }
-    }
     private fun frame() {
         drawer = null
-        val h = FrameLayout(this).apply { setBackgroundColor(canvas) }
-        host.value = h
+        val h = host.value ?: FrameLayout(this).also { frame ->
+            frame.setBackgroundColor(canvas); host.value = frame
+            val web = FrameLayout(this).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS }
+            webHost = web
+            frame.addView(web, FrameLayout.LayoutParams(dp(1),dp(1),Gravity.TOP or Gravity.START))
+            setContentView(frame)
+            com.nemap.android.web.WebViewHost.bindContainer(web)
+        }
+        if (::root.isInitialized) h.removeView(root)
+        while(h.childCount > 1) h.removeViewAt(h.childCount-1)
         root = column().apply { setBackgroundColor(canvas) }
-        h.addView(root, FrameLayout.LayoutParams(-1,-1)); setContentView(h)
+        h.addView(root, FrameLayout.LayoutParams(-1,-1))
     }
     private fun topBar(title: String, subtitle: String): View {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(12),dp(8)); setBackgroundColor(white) }
         row.addView(action("☰", Color.TRANSPARENT, strong) { openDrawer() }.apply { textSize = 21f; contentDescription = "Ouvrir le menu" }, LinearLayout.LayoutParams(dp(48),dp(48)))
         val titles = column().apply { setPadding(dp(7),0,0,0); addView(label(title,16f,strong,true).apply { maxLines = 1 }); addView(label(subtitle,11f,muted)) }
         row.addView(titles, LinearLayout.LayoutParams(0,-2,1f))
-        row.addView(action("＋", Color.TRANSPARENT, primary) { chooseMode() }.apply { textSize = 24f; contentDescription = "Nouvelle discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        val sessionId = if (screen == "chat") currentSession else null
+        if (sessionId != null) {
+            row.addView(action("📁", Color.TRANSPARENT, primary) { showSessionFiles(sessionId) }.apply { textSize=22f; contentDescription="Fichiers de cette discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        } else {
+            row.addView(action("＋", Color.TRANSPARENT, primary) { chooseMode() }.apply { textSize = 24f; contentDescription = "Nouvelle discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        }
         return row
     }
     private fun separator() = View(this).apply { setBackgroundColor(line); layoutParams = LinearLayout.LayoutParams(-1,dp(1)) }
@@ -287,12 +387,12 @@ class MainActivity : Activity() {
     private fun toolCard(raw: String): View {
         val obj=try { JSONObject(raw) } catch(_:Exception) { null }
         val name=obj?.optString("name") ?: raw.substringBefore(" — ")
-        val result=obj?.optJSONObject("result"); val ok=result?.optBoolean("success",false) ?: !raw.contains("échec")
+        val result=obj?.optJSONObject("result"); val pending=result?.optBoolean("pending",false) ?: false; val ok=result?.optBoolean("success",false) ?: !raw.contains("échec")
         val params=obj?.optJSONObject("parameters"); val arg=params?.optString("command")?.ifBlank { params.optString("path") } ?: ""
         val card=column().apply { background=shape(white,16,line); setPadding(dp(13),dp(8),dp(13),dp(8)) }
         val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; orientation=LinearLayout.HORIZONTAL }
-        row.addView(label(if(ok) "✓" else "!",15f,if(ok) primary else danger,true).apply { gravity=Gravity.CENTER; background=shape(pale,10) },LinearLayout.LayoutParams(dp(34),dp(34)))
-        val titles=column().apply { setPadding(dp(10),0,0,0); addView(label(name + if(ok) " · terminé" else " · échec ou refus",13f,strong,true)); if(arg.isNotBlank()) addView(label(arg.take(70),12f,muted).apply { maxLines=1 }) }
+        row.addView(label(if(pending) "…" else if(ok) "✓" else "!",15f,if(pending || ok) primary else danger,true).apply { gravity=Gravity.CENTER; background=shape(pale,10) },LinearLayout.LayoutParams(dp(34),dp(34)))
+        val titles=column().apply { setPadding(dp(10),0,0,0); addView(label(name + if(pending) " · en cours" else if(ok) " · terminé" else " · échec",13f,strong,true)); if(arg.isNotBlank()) addView(label(arg.take(70),12f,muted).apply { maxLines=1 }) }
         row.addView(titles,LinearLayout.LayoutParams(0,-2,1f)); val arrow=label("⌄",20f,muted); row.addView(arrow)
         val detail=label(if(obj==null) raw else "PARAMÈTRES\n${params?.toString(2) ?: "{}"}\n\nRÉSULTAT\n${result?.toString(2) ?: "{}"}",12f,strong).apply {
             typeface=Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(dp(8),dp(14),dp(8),dp(8)); visibility=View.GONE
@@ -312,11 +412,19 @@ class MainActivity : Activity() {
             body.addView(gap(55)); body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,14); clipToOutline=true; contentDescription="Logo NEMESIS" }, LinearLayout.LayoutParams(dp(52),dp(52)).apply { gravity=Gravity.CENTER_HORIZONTAL })
             body.addView(gap(12)); body.addView(label("Que souhaitez-vous faire ?",22f,strong,true).apply { gravity=Gravity.CENTER })
             body.addView(gap(7)); body.addView(label(modeDescription(currentMode),14f,muted).apply { gravity=Gravity.CENTER })
-            if(currentMode!="chat") { body.addView(gap(14)); body.addView(label("Les actions sensibles demandent votre accord. Les fichiers SSH et locaux sont distincts.",12f,muted).apply { gravity=Gravity.CENTER }) }
+            if(currentMode!="chat") { body.addView(gap(14)); body.addView(label("Les outils sont exécutés sans confirmation. Les fichiers SSH et locaux sont distincts.",12f,muted).apply { gravity=Gravity.CENTER }) }
         }
         for(i in 0 until messages.length()) {
             val item=messages.getJSONObject(i); val role=item.optString("role"); val text=item.optString("text")
             body.addView(if(role=="tool") toolCard(text) else bubble(role,text)); body.addView(gap(12))
+            if (role == "tool") {
+                val tool = try { JSONObject(text) } catch (_:Exception) { null }
+                val result = tool?.optJSONObject("result")
+                val path = if (tool?.optString("name") in listOf("write_file","edit","append","download_file") && result?.optBoolean("success") == true) result.optString("path") else ""
+                if (path.isNotBlank()) {
+                    body.addView(action("▤   $path    ›", white, primary) { showFile(path,id) }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START; background=shape(white,14,line); contentDescription="Ouvrir le fichier $path" }); body.addView(gap(12))
+                }
+            }
         }
         if(busy && busySession == id && pendingPreview != null) {
             val recorded = (0 until messages.length()).any { i ->
@@ -332,7 +440,13 @@ class MainActivity : Activity() {
             var last = ""
             val update = object : Runnable {
                 override fun run() {
-                    if (!busy || screen != "chat" || currentSession != id || !live.isAttachedToWindow) return
+                    if (screen != "chat" || currentSession != id || !live.isAttachedToWindow) return
+                    if (!busy || busySession != id) {
+                        JobRunner.takeError()?.let { toast(it) }
+                        showChat(id); return
+                    }
+                    val currentMessages = try { JSONObject(py.callAttr("get_session",id).toString()).optJSONArray("messages")?.toString() ?: "[]" } catch (_:Exception) { messages.toString() }
+                    if (currentMessages != messages.toString()) { showChat(id); return }
                     val partial = try { JSONObject(py.callAttr("live_progress",id).toString()).optString("text", "") } catch (_:Exception) { "" }
                     if (partial != last) {
                         val nearBottom = scroll.getChildAt(0).height - scroll.height - scroll.scrollY < dp(100)
@@ -362,31 +476,24 @@ class MainActivity : Activity() {
         val controls=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         controls.addView(action("＋",Color.TRANSPARENT,primary) { attachmentMenu(id) }.apply { textSize=23f; contentDescription="Ajouter une pièce jointe"; isEnabled=!busy },LinearLayout.LayoutParams(dp(48),dp(48)))
         controls.addView(label(modeName(currentMode)+"  ·  DeepSeek",12f,muted,true),LinearLayout.LayoutParams(0,-2,1f))
-        val send=action("↑",primary,white) {
+        val send=action(if(busy && busySession==id) "■" else "↑",primary,white) {
+            if (busy && busySession==id) { py.callAttr("cancel"); toast("Arrêt demandé…"); return@action }
             val text=input.text.toString().trim(); val list=attachments[id]?.toList() ?: emptyList()
             if((text.isNotEmpty() || list.isNotEmpty()) && !busy) {
                 drafts[id]=""; attachments.remove(id); val json=JSONArray(); list.forEach { json.put(it) }
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken,0)
-                busy=true; busySession=id
                 val previewText = if(text.isBlank()) "Analyse les pièces jointes." else text
-                pendingPreview = previewText + (if(list.isEmpty()) "" else "\n\nPièces jointes : " + list.joinToString(", ") { it.optString("name") })
-                showChat(id)
-                worker.execute {
-                    val result=try { JSONObject(py.callAttr("send",id,text,json.toString()).toString()) } catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message?:"Erreur") }
-                    runOnUiThread {
-                        busy=false; busySession=null; pendingPreview=null
-                        if(!result.optBoolean("ok")) toast(result.optString("error","Erreur"))
-                        if(screen=="chat" && currentSession==id && !isFinishing && !isDestroyed) showChat(id)
-                    }
-                }
+                val preview = previewText + (if(list.isEmpty()) "" else "\n\nPièces jointes : " + list.joinToString(", ") { it.optString("name") })
+                if (JobRunner.start(applicationContext,id,text,json.toString(),preview)) showChat(id)
+
             }
         }.apply {
             textSize=20f; setPadding(0,0,0,0); minimumHeight=0; minHeight=0
             background=shape(primary,99); importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            isEnabled=!busy && session.optInt("uncertain")!=1; alpha=if(isEnabled) 1f else .45f
+            isEnabled=(busy && busySession==id) || (!busy && session.optInt("uncertain")!=1); alpha=if(isEnabled) 1f else .45f
         }
         val sendTarget=FrameLayout(this).apply {
-            contentDescription="Envoyer le message"; isClickable=true; isFocusable=true
+            contentDescription=if(busy && busySession==id) "Arrêter la tâche" else "Envoyer le message"; isClickable=true; isFocusable=true
             isEnabled=send.isEnabled; setOnClickListener { send.performClick() }
             addView(send,FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
         }
@@ -401,19 +508,94 @@ class MainActivity : Activity() {
         try { startActivityForResult(intent,302) } catch(_:Exception) { toast("Sélecteur de fichiers indisponible.") }
     }
     private fun showFiles() {
-        screen="files"; currentSession=null; frame(); root.addView(topBar("Fichiers","Espace de travail local")); root.addView(separator())
-        val (_,body)=scrollArea(20); body.addView(gap(12)); body.addView(label("Espace de travail",25f,strong,true)); body.addView(gap(6)); body.addView(label("Vos fichiers privés, créés dans l’application.",14f,muted)); body.addView(gap(20))
-        val files=JSONArray(py.callAttr("list_files").toString()); if(files.length()==0) body.addView(label("Aucun fichier pour le moment.",14f,muted))
-        for(i in 0 until files.length()) { val name=files.getJSONObject(i).optString("name"); body.addView(action("▤   $name",white,strong) { showFile(name) }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START; background=shape(white,14,line) }); body.addView(gap(8)) }
+        screen="files"; currentSession=null; frame(); root.addView(topBar("Fichiers","Espaces de travail")); root.addView(separator())
+        val (_,body)=scrollArea(20); body.addView(gap(12)); body.addView(label("Espaces de travail",25f,strong,true)); body.addView(gap(6))
+        body.addView(label("Fichiers Work et Code, classés par discussion.",14f,muted)); body.addView(gap(20))
+        val sessions=JSONArray(py.callAttr("list_sessions").toString()); var shown=0
+        for(i in 0 until sessions.length()) {
+            val session=sessions.getJSONObject(i); val id=session.optString("id"); val mode=session.optString("mode")
+            if(mode != "work" && mode != "code") continue
+            val files=try { JSONArray(py.callAttr("list_files",id).toString()) } catch (_:Exception) { JSONArray() }
+            if(files.length()==0) continue
+            shown++
+            body.addView(sheetRow(session.optString("title"), modeName(mode)+" · "+files.length()+" fichier(s)") { showSessionFiles(id) }); body.addView(gap(8))
+        }
+        val legacy=JSONArray(py.callAttr("list_files").toString())
+        for(i in 0 until legacy.length()) {
+            shown++; val name=legacy.getJSONObject(i).optString("name")
+            body.addView(sheetRow(name,"Ancien espace privé") { showFile(name) }); body.addView(gap(8))
+        }
+        if(shown==0) body.addView(label("Aucun fichier pour le moment.",14f,muted))
     }
-    private fun showFile(name:String) {
-        val base=File(py.callAttr("workspace_root").toString()).canonicalFile; val file=File(base,name).canonicalFile
+    private fun showSessionFiles(id:String) {
+        val files=try { JSONArray(py.callAttr("list_files",id).toString()) } catch (e:Exception) { toast(e.message ?: "Espace indisponible"); return }
+        sheet("Fichiers de la discussion", "Les fichiers créés ou rapatriés dans cet espace local.") { body, dialog ->
+            if(files.length()==0) body.addView(label("Aucun fichier pour le moment.",14f,muted))
+            for(i in 0 until files.length()) {
+                val item=files.getJSONObject(i); val name=item.optString("name")
+                body.addView(sheetRow(name, "${item.optLong("size")} octets") { dialog.dismiss(); showFile(name,id) }); body.addView(gap(8))
+            }
+        }
+    }
+    private fun docxText(file:File):String {
+        java.util.zip.ZipFile(file).use { zip ->
+            val entry=zip.getEntry("word/document.xml") ?: return "Document Word non reconnu."
+            if(entry.size > 2_000_000L) return "Document trop volumineux pour cet aperçu."
+            val xml=zip.getInputStream(entry).use { input ->
+                val out=java.io.ByteArrayOutputStream(); val b=ByteArray(8192); var total=0
+                while(true) { val n=input.read(b); if(n<0) break; total+=n; if(total>2_000_000) throw IllegalArgumentException("Document trop volumineux"); out.write(b,0,n) }; out.toByteArray()
+            }
+            val parser=android.util.Xml.newPullParser(); parser.setInput(xml.inputStream(),"UTF-8")
+            val result=StringBuilder(); var event=parser.eventType; var inText=false
+            while(event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT && result.length<50_000) {
+                val local=parser.name?.substringAfter(':')
+                if(event==org.xmlpull.v1.XmlPullParser.START_TAG && local=="t") inText=true
+                if(event==org.xmlpull.v1.XmlPullParser.TEXT && inText) result.append(parser.text)
+                if(event==org.xmlpull.v1.XmlPullParser.END_TAG && local=="t") inText=false
+                if(event==org.xmlpull.v1.XmlPullParser.END_TAG && local=="p") result.append('\n')
+                event=parser.next()
+            }
+            return result.toString().ifBlank { "Aucun texte à afficher." }
+        }
+    }
+    private fun showFile(name:String, sid:String?=null) {
+        val base=File(if(sid==null) py.callAttr("workspace_root").toString() else py.callAttr("workspace_root",sid).toString()).canonicalFile
+        val file=File(base,name).canonicalFile
         if(!file.path.startsWith(base.path+File.separator)||!file.isFile) { toast("Fichier inaccessible"); return }
-        val preview=try { file.bufferedReader().use { val chars=CharArray(10000); val n=it.read(chars); if(n>0) String(chars,0,n) else "Fichier vide" } } catch(_:Exception) { "Aperçu indisponible" }
-        sheet(name,"Aperçu limité à 10 000 caractères") { body, dialog ->
-            body.addView(label(preview,13f,strong).apply { setTextIsSelectable(true); typeface=Typeface.MONOSPACE; setPadding(dp(14),dp(14),dp(14),dp(14)); background=shape(canvas,14) }); body.addView(gap(14))
-            body.addView(action("Exporter",primary,white) {
-                dialog.dismiss(); selectedFile=file.path; startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"; putExtra(Intent.EXTRA_TITLE,file.name) },301)
+        sheet(name,"Aperçu dans NEMESIS") { body, dialog ->
+            try {
+                when (file.extension.lowercase()) {
+                    "pdf" -> android.os.ParcelFileDescriptor.open(file,android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                        android.graphics.pdf.PdfRenderer(descriptor).use { pdf ->
+                            val count=minOf(pdf.pageCount,10)
+                            for (i in 0 until count) pdf.openPage(i).use { page ->
+                                val width=minOf(720,resources.displayMetrics.widthPixels-dp(70)).coerceAtLeast(240)
+                                val height=(width.toFloat()*page.height/page.width).toInt().coerceAtMost(2000)
+                                val bitmap=android.graphics.Bitmap.createBitmap(width,height,android.graphics.Bitmap.Config.ARGB_8888); bitmap.eraseColor(Color.WHITE)
+                                page.render(bitmap,null,null,android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                body.addView(ImageView(this).apply { setImageBitmap(bitmap); adjustViewBounds=true; contentDescription="Page ${i+1} du document" },LinearLayout.LayoutParams(-1,-2)); body.addView(gap(10))
+                            }
+                            if(pdf.pageCount>count) body.addView(label("Aperçu limité aux 10 premières pages.",12f,muted))
+                        }
+                    }
+                    "png","jpg","jpeg","webp" -> {
+                        val opts=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                        android.graphics.BitmapFactory.decodeFile(file.path,opts); opts.inSampleSize=maxOf(1,maxOf(opts.outWidth,opts.outHeight)/1600); opts.inJustDecodeBounds=false
+                        val bitmap=android.graphics.BitmapFactory.decodeFile(file.path,opts) ?: throw IllegalArgumentException("Image invalide")
+                        body.addView(ImageView(this).apply { setImageBitmap(bitmap); adjustViewBounds=true },LinearLayout.LayoutParams(-1,-2))
+                    }
+                    "docx" -> body.addView(label(docxText(file),14f,strong).apply { setTextIsSelectable(true); setPadding(dp(12),dp(12),dp(12),dp(12)); background=shape(canvas,14) })
+                    "txt","md","csv","json","xml","html","py","js","kt","java","log","yaml","yml" -> {
+                        val preview=file.bufferedReader().use { val chars=CharArray(50_000); val n=it.read(chars); if(n>0) String(chars,0,n) else "Fichier vide" }
+                        body.addView(label(preview,13f,strong).apply { setTextIsSelectable(true); typeface=Typeface.MONOSPACE; setPadding(dp(12),dp(12),dp(12),dp(12)); background=shape(canvas,14) })
+                    }
+                    else -> body.addView(label("Aperçu de ce format indisponible. Vous pouvez l’exporter.",14f,muted))
+                }
+            } catch(e:Exception) { body.addView(label("Aperçu impossible : ${e.message ?: "fichier invalide"}",13f,danger)) }
+            body.addView(gap(14)); body.addView(action("Exporter",primary,white) {
+                dialog.dismiss(); selectedFile=file.path
+                val mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream"
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type=mime; putExtra(Intent.EXTRA_TITLE,file.name) },301)
             })
         }
     }
@@ -449,7 +631,7 @@ class MainActivity : Activity() {
         body.addView(settingCard("Moteur · NemApi","Connexion DeepSeek et paramètres intégrés à NEMESIS.") { startActivity(Intent(this, com.nemap.android.MainActivity::class.java)) }); body.addView(gap(10))
         val ssh=SshBridge.details(); val desc=if(ssh.optBoolean("configured")) "${ssh.optString("user")}@${ssh.optString("host")} · connexion à vérifier" else "Configurer un serveur SSH ou Termux."
         body.addView(settingCard("Environnement SSH",desc) { sshSettings() }); body.addView(gap(24)); body.addView(label("ESPACE DE TRAVAIL",11f,muted,true)); body.addView(gap(8))
-        body.addView(settingCard("Fichiers locaux","Consulter et exporter les fichiers privés de l’application.") { showFiles() }); body.addView(gap(18))
+        body.addView(settingCard("Fichiers locaux","Consulter les fichiers Work et Code par discussion.") { showFiles() }); body.addView(gap(18))
         val setting = LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(12)); background=shape(white,16,line) }
         val labels = column().apply { addView(label("Détails des outils",15f,strong,true)); addView(gap(4)); addView(label("Déplier automatiquement les paramètres et résultats.",13f,muted)) }
         setting.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
@@ -463,8 +645,8 @@ class MainActivity : Activity() {
         body.addView(settingCard("Instructions personnalisées","Adapter le style et les préférences de NEMESIS.") { editPersonalization() }); body.addView(gap(10))
         body.addView(settingCard("Mémoire", "Choisir les informations à retenir entre les discussions.") { showMemory() }); body.addView(gap(20))
         body.addView(label("FONCTIONS À ADAPTER",11f,muted,true)); body.addView(gap(8))
-        body.addView(settingCard("Skills", "Gestion Android pas encore disponible.") { toast("La gestion des skills n’est pas encore disponible sur Android.") }); body.addView(gap(8))
-        body.addView(settingCard("Serveurs MCP", "Intégration Android pas encore disponible.") { toast("Les serveurs MCP ne sont pas encore disponibles sur Android.") })
+        body.addView(settingCard("Skills", "Consulter les skills et leurs instructions.") { showSkills() }); body.addView(gap(8))
+        body.addView(settingCard("Serveurs MCP", "Ajouter et tester des serveurs HTTP ou SSH.") { showMcpServers() })
         body.addView(gap(20)); body.addView(label("NEMESIS Android · version de développement",12f,muted))
     }
     private fun settingCard(title:String, description:String,click:()->Unit):View=column().apply {

@@ -24,7 +24,6 @@ object DeepSeek {
 
     private const val ELEMENT_MS = 15_000L
     private const val FIRST_TOKEN_MS = 60_000L
-    private const val RESPONSE_MS = 1_800_000L // long streams may include several slow model phases
     private const val STABILITY_MS = 2_000L
     private const val POLL_MS = 250L
     /** Plafond de sécurité, plus jamais atteint en pratique (voir waitUpload). */
@@ -33,7 +32,6 @@ object DeepSeek {
     private const val UPLOAD_SILENCE_MS = 3_000L
     /** Taille d'un morceau de base64 transféré par evaluateJavascript. */
     private const val CHUNK = 96_000
-    private const val MAX_CONTINUATIONS = 64
 
     /** Construit le prompt envoyé à la page à partir de l'historique OpenAI. */
     fun buildPrompt(messages: List<Msg>): String {
@@ -135,6 +133,8 @@ object DeepSeek {
         val readySend = waitSendReady(budget, shouldCancel)
         if (!readySend) NemLog.w("dom", "contrôle d'envoi inactif après $budget ms → repli Entrée")
 
+        // Keep a baseline so DOM fallback cannot return the previous turn as a new answer.
+        val beforeSubmit = Engine.adapter("answer")
         // 3) envoyer
         val sub = Engine.adapter("submit")
         if (!sub.optBoolean("ok")) {
@@ -148,25 +148,22 @@ object DeepSeek {
         // 4) suivre la réponse, puis actionner « Continue » si le modèle a
         // atteint sa limite de sortie. Chaque reprise ouvre un nouveau flux;
         // son texte est dédoublonné avant d'être envoyé au client OpenAI.
-        var answer = follow(prompt, onDelta, shouldCancel, onKeepAlive)
+        var answer = follow(prompt, onDelta, shouldCancel, onKeepAlive, beforeSubmit)
         var continuationCount = 0
-        while (continuationCount < MAX_CONTINUATIONS) {
+        while (true) {
             val available = waitContinueButton(shouldCancel, if (answer.length >= 6_000) 8_000L else 2_500L, onKeepAlive)
             if (!available) break
             if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
+            val beforeContinue = Engine.adapter("answer")
             Engine.resetStream()
             val clicked = Engine.adapter("continueGeneration")
             if (!clicked.optBoolean("ok")) break
             continuationCount++
-            NemLog.i("dom", "DeepSeek a affiché « Continue » → reprise ${continuationCount}/${MAX_CONTINUATIONS}")
+            NemLog.i("dom", "DeepSeek a affiché « Continue » → reprise $continuationCount")
             val tail = ContinuationTail(answer, onDelta)
-            follow(prompt, onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive)
+            follow(prompt, onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive, baseline = beforeContinue)
             tail.finish()
             answer = tail.fullText()
-        }
-        if (continuationCount == MAX_CONTINUATIONS && waitContinueButton(shouldCancel, 8_000L, onKeepAlive)) {
-            NemLog.e("dom", "DeepSeek demande encore une reprise après $MAX_CONTINUATIONS continuations")
-            throw NemApiException.timeout("DeepSeek a encore affiché « Continue » après $MAX_CONTINUATIONS reprises. La réponse est interrompue par la limite de sortie de la page.")
         }
         return answer
     }
@@ -328,11 +325,16 @@ object DeepSeek {
         return false
     }
 
+    internal fun isFreshDomAnswer(answer: JSONObject, baseline: JSONObject): Boolean {
+        return DomFreshness.isFresh(answer.optBoolean("ok"), answer.optString("text", ""), answer.optInt("blocks", 0), baseline.optString("text", ""), baseline.optInt("blocks", 0))
+    }
+
     private suspend fun follow(
         prompt: String,
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean,
-        onKeepAlive: () -> Unit = {}
+        onKeepAlive: () -> Unit = {},
+        baseline: JSONObject
     ): String {
         val t0 = System.currentTimeMillis()
         var lastKeepAlive = t0
@@ -369,7 +371,7 @@ object DeepSeek {
                         val err = if (st.isNull("error")) "" else st.optString("error", "")
                         if (err.isNotEmpty() && acc.isEmpty()) {
                             val domAnswer = Engine.adapter("answer")
-                            val fromDom = if (domAnswer.optBoolean("ok")) domAnswer.optString("text", "") else ""
+                            val fromDom = if (isFreshDomAnswer(domAnswer, baseline)) domAnswer.optString("text", "") else ""
                             if (fromDom.isNotEmpty()) {
                                 NemLog.w("hook", "flux en erreur ($err) mais réponse présente dans le DOM → lecture DOM")
                                 onDelta(fromDom)
@@ -397,7 +399,7 @@ object DeepSeek {
 
             if (mode == "dom") {
                 val a = Engine.adapter("answer")
-                val txt = if (a.optBoolean("ok")) a.optString("text", "") else ""
+                val txt = if (isFreshDomAnswer(a, baseline)) a.optString("text", "") else ""
                 if (txt.isNotEmpty() && txt != lastDom) {
                     lastDom = txt
                     stableSince = now
@@ -428,7 +430,7 @@ object DeepSeek {
                         }
                     } else {
                         val latest = Engine.adapter("answer")
-                        val latestText = if (latest.optBoolean("ok")) latest.optString("text", "") else ""
+                        val latestText = if (isFreshDomAnswer(latest, baseline)) latest.optString("text", "") else ""
                         if (latestText.length > acc.length) {
                             onDelta(latestText.substring(acc.length))
                             acc = latestText
@@ -439,17 +441,13 @@ object DeepSeek {
                 }
             }
 
-            if (now - t0 > RESPONSE_MS) {
-                stopPage()
-                throw NemApiException.timeout("Le provider n'a pas terminé la génération dans le délai imparti (${RESPONSE_MS / 1000} s).")
-            }
             delay(POLL_MS)
         }
 
         // fin de flux : si le hook n'a rien donné, on tente le DOM
         if (acc.isBlank()) {
             val a = Engine.adapter("answer")
-            if (a.optBoolean("ok")) acc = a.optString("text", "")
+            if (isFreshDomAnswer(a, baseline)) acc = a.optString("text", "")
         }
         if (acc.isBlank()) {
             throw NemApiException(

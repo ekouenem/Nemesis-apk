@@ -33,4 +33,28 @@ class SshBridgeInstrumentedTest {
             assertFalse(invalid.optString("output").contains("must_not_run"))
         } finally { SshBridge.clear() }
     }
+    @Test fun isolatedFixtureConnectAndDownload() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("opt in required", args.getString("fixture_setup") == "true")
+        val host = args.getString("test_ssh_host") ?: ""
+        val user = args.getString("test_ssh_user") ?: ""
+        val password = args.getString("test_ssh_password") ?: ""
+        val fingerprint = args.getString("test_ssh_fingerprint") ?: ""
+        val port = args.getString("test_ssh_port")?.toIntOrNull() ?: 0
+        assertTrue(host.isNotBlank() && user.isNotBlank() && password.isNotBlank() && fingerprint.isNotBlank() && port > 0)
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        SshBridge.init(context)
+        assumeFalse("User SSH configuration must not be overwritten", SshBridge.details().optBoolean("configured"))
+        SshBridge.save(host, port, user, fingerprint, password)
+        try {
+            val execution=JSONObject(SshBridge.execute("printf NEMESIS_SFTP_CHECK > /workspace/sftp-check.txt",20))
+            assertTrue(execution.optString("error"),execution.optBoolean("success"))
+            val target=java.io.File(context.cacheDir,"sftp-check.txt")
+            val transfer=JSONObject(SshBridge.download("/workspace/sftp-check.txt",target.absolutePath))
+            assertTrue(transfer.optString("error"),transfer.optBoolean("success"))
+            assertEquals("NEMESIS_SFTP_CHECK",target.readText()); target.delete()
+            assertTrue(JSONObject(SshBridge.execute("rm /workspace/sftp-check.txt",20)).optBoolean("success"))
+        } catch (e:Throwable) { SshBridge.clear(); throw e }
+    }
+
 }

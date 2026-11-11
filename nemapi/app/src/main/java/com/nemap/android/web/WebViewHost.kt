@@ -157,7 +157,8 @@ object WebViewHost {
         webView?.let { attach(it) }
     }
 
-    fun unbindContainer() {
+    fun unbindContainer(expected: ViewGroup? = null) {
+        if (expected != null && container !== expected) return
         val wv = webView ?: return
         (wv.parent as? ViewGroup)?.removeView(wv)
         container = null

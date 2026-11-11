@@ -211,7 +211,7 @@ class BrowserActivity : Activity() {
         } catch (_: Throwable) {
         }
         ui.removeCallbacks(tick)
-        WebViewHost.unbindContainer()
+        WebViewHost.unbindContainer(container)
         NemLog.i("dom", "navigateur fermé (WebView conservé, page toujours active)")
         super.onDestroy()
     }

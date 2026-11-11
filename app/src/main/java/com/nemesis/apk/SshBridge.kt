@@ -57,49 +57,118 @@ object SshBridge {
     }
     fun clear() { check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." } }
 
+    internal fun connect(): com.jcraft.jsch.Session {
+        val config = details()
+        require(config.optBoolean("configured")) { "Configurez d'abord un serveur SSH ou Termux dans Réglages." }
+        val fingerprint = config.getString("fingerprint").trimEnd('=')
+        val jsch = JSch()
+        jsch.hostKeyRepository = object : HostKeyRepository {
+            override fun check(host: String?, key: ByteArray?): Int {
+                if (key == null) return HostKeyRepository.CHANGED
+                val actual = "SHA256:" + Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(key), Base64.NO_WRAP or Base64.NO_PADDING)
+                return if (MessageDigest.isEqual(actual.toByteArray(), fingerprint.toByteArray())) HostKeyRepository.OK else HostKeyRepository.CHANGED
+            }
+            override fun add(hostkey: HostKey?, ui: UserInfo?) {}
+            override fun remove(host: String?, type: String?) {}
+            override fun remove(host: String?, type: String?, key: ByteArray?) {}
+            override fun getKnownHostsRepositoryID(): String = "NEMESIS pinned SHA256"
+            override fun getHostKey(): Array<HostKey> = emptyArray()
+            override fun getHostKey(host: String?, type: String?): Array<HostKey> = emptyArray()
+        }
+        val session = jsch.getSession(config.getString("user"), config.getString("host"), config.getInt("port"))
+        session.setPassword(password()); session.setConfig("StrictHostKeyChecking", "yes")
+        session.setConfig("PreferredAuthentications", "password,keyboard-interactive")
+        session.connect(15_000)
+        return session
+    }
+
     @JvmStatic fun execute(command: String, timeoutSeconds: Int): String {
         val config = details(); var session: com.jcraft.jsch.Session? = null
         var channel: com.jcraft.jsch.ChannelExec? = null
         return try {
             require(config.optBoolean("configured")) { "Configurez d'abord un serveur SSH ou Termux dans Réglages." }
-            require(command.isNotBlank() && command.length <= 1_000) { "Commande vide ou trop longue" }
-            val fingerprint = config.getString("fingerprint").trimEnd('=')
-            val jsch = JSch()
-            jsch.hostKeyRepository = object : HostKeyRepository {
-                override fun check(host: String?, key: ByteArray?): Int {
-                    if (key == null) return HostKeyRepository.CHANGED
-                    val actual = "SHA256:" + Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(key), Base64.NO_WRAP or Base64.NO_PADDING)
-                    return if (MessageDigest.isEqual(actual.toByteArray(), fingerprint.toByteArray())) HostKeyRepository.OK else HostKeyRepository.CHANGED
-                }
-                override fun add(hostkey: HostKey?, ui: UserInfo?) {}
-                override fun remove(host: String?, type: String?) {}
-                override fun remove(host: String?, type: String?, key: ByteArray?) {}
-                override fun getKnownHostsRepositoryID(): String = "NEMESIS pinned SHA256"
-                override fun getHostKey(): Array<HostKey> = emptyArray()
-                override fun getHostKey(host: String?, type: String?): Array<HostKey> = emptyArray()
-            }
-            session = jsch.getSession(config.getString("user"), config.getString("host"), config.getInt("port"))
-            session.setPassword(password()); session.setConfig("StrictHostKeyChecking", "yes")
-            session.setConfig("PreferredAuthentications", "password,keyboard-interactive")
-            session.connect(15_000)
+            require(command.isNotBlank()) { "Commande vide" }
+            session = connect()
             channel = session.openChannel("exec") as com.jcraft.jsch.ChannelExec
             channel.setCommand(command)
             val bytes = ByteArrayOutputStream()
             val capped = object : OutputStream() {
-                @Synchronized override fun write(b: Int) { if (bytes.size() < 100_000) bytes.write(b) }
-                @Synchronized override fun write(b: ByteArray, off: Int, len: Int) {
-                    val keep = minOf(len, 100_000 - bytes.size()); if (keep > 0) bytes.write(b, off, keep)
-                }
+                @Synchronized override fun write(b: Int) { bytes.write(b) }
+                @Synchronized override fun write(b: ByteArray, off: Int, len: Int) { bytes.write(b, off, len) }
             }
             channel.setOutputStream(capped); channel.setErrStream(capped); channel.connect(15_000)
-            val until = System.currentTimeMillis() + timeoutSeconds.coerceIn(1,300) * 1000L
+            val until = System.currentTimeMillis() + timeoutSeconds.coerceAtLeast(1).toLong() * 1000L
             while (!channel.isClosed && System.currentTimeMillis() < until) Thread.sleep(100)
             if (!channel.isClosed) JSONObject().put("success",false).put("error","Délai SSH dépassé ; la commande distante peut continuer.")
             else JSONObject().put("success",channel.exitStatus == 0).put("exit_code",channel.exitStatus)
-                .put("output", bytes.toString("UTF-8")).put("truncated", bytes.size() >= 100_000)
+                .put("output", bytes.toString("UTF-8")).put("truncated", false)
         } catch (e: Exception) {
             JSONObject().put("success",false).put("error", "SSH : " + (e.message ?: e.javaClass.simpleName))
         } finally { channel?.disconnect(); session?.disconnect() }
         .toString()
     }
+    @JvmStatic fun download(remote: String, local: String): String {
+        var session: com.jcraft.jsch.Session? = null
+        var channel: com.jcraft.jsch.ChannelSftp? = null
+        val destination = java.io.File(local)
+        var temp: java.io.File? = null
+        return try {
+            require(remote.isNotBlank() && remote.length <= 1000) { "Chemin distant invalide" }
+            session = connect()
+            channel = session.openChannel("sftp") as com.jcraft.jsch.ChannelSftp
+            channel.connect(15_000)
+            val attrs = channel.stat(remote)
+            require(!attrs.isDir && attrs.size >= 0) { "Fichier distant absent ou dossier" }
+            val parent = destination.parentFile ?: throw IllegalArgumentException("Dossier local invalide")
+            check(parent.exists() || parent.mkdirs()) { "Dossier local inaccessible" }
+            temp = java.io.File.createTempFile(".nemesis-transfer-", ".part", parent)
+            channel.get(remote, temp.absolutePath)
+            check(temp.length() == attrs.size) { "Transfert incomplet" }
+            check(temp.renameTo(destination)) { "Impossible de placer le fichier transféré" }
+            JSONObject().put("success",true).put("size",destination.length())
+        } catch (e: Exception) {
+            JSONObject().put("success",false).put("error","SSH transfert : " + (e.message ?: e.javaClass.simpleName))
+        } finally { temp?.delete(); channel?.disconnect(); session?.disconnect() }.toString()
+    }
+
+    /** Synchronise a skill folder to an explicitly named remote SSH directory. */
+    @JvmStatic fun uploadDirectory(local: String, remote: String): String {
+        var session: com.jcraft.jsch.Session? = null
+        var channel: com.jcraft.jsch.ChannelSftp? = null
+        return try {
+            val root=java.io.File(local).canonicalFile
+            require(root.isDirectory && java.io.File(root,"SKILL.md").isFile) { "Dossier de skill invalide" }
+            require(remote.startsWith("/") && remote.split('/').none { it == ".." } && remote.none { it.code < 32 }) { "Chemin distant absolu requis" }
+            session = connect(); channel = session.openChannel("sftp") as com.jcraft.jsch.ChannelSftp; channel.connect(15_000)
+            val sftp=channel
+            fun mkdirs(path:String) {
+                var part=""
+                for(segment in path.split('/').filter { it.isNotBlank() && it != "." }) {
+                    part += "/" + segment
+                    try { val a=sftp.stat(part); check(a.isDir) { "Le chemin distant existe sans être un dossier" } }
+                    catch(e:com.jcraft.jsch.SftpException) { if(e.id != com.jcraft.jsch.ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e; sftp.mkdir(part) }
+                }
+            }
+            val dest=remote.trimEnd('/'); require(dest.isNotEmpty()) { "Racine distante interdite" }; mkdirs(dest)
+            var count=0
+            root.walkTopDown().forEach { entry ->
+                if (entry != root) {
+                    require(!java.nio.file.Files.isSymbolicLink(entry.toPath())) { "Lien symbolique interdit dans le skill" }
+                    val resolved=entry.canonicalFile
+                    require(resolved.path.startsWith(root.path+java.io.File.separator)) { "Chemin de skill hors dossier" }
+                    val rel=entry.relativeTo(root).path.replace(java.io.File.separatorChar, '/')
+                    val target="$dest/$rel"
+                    if(entry.isDirectory) mkdirs(target) else if(entry.isFile) {
+                        mkdirs(target.substringBeforeLast('/'))
+                        entry.inputStream().use { input -> sftp.put(input,target) }
+                        if(entry.canExecute()) try { sftp.chmod(493,target) } catch(_:Exception) {}
+                        count++
+                    }
+                }
+            }
+            JSONObject().put("success",true).put("remote_path",dest).put("files",count)
+        } catch(e:Exception) { JSONObject().put("success",false).put("error","SSH skill : " + (e.message ?: e.javaClass.simpleName)) }
+        finally { channel?.disconnect(); session?.disconnect() }.toString()
+    }
+
 }

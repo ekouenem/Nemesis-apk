@@ -47,8 +47,10 @@ class MobileTests(unittest.TestCase):
         self.assertIn('mémoire',provider.send_message.call_args_list[0].kwargs['system_prefix'].lower())
         sid=json.loads(m.create_session('chat'))['id']; provider=Mock();provider.url=None
         provider.send_message.side_effect=[{'success':True,'response':'```json\n{"tool":"bash","parameters":{"command":"echo X"}}\n```'},{'success':True,'response':'OK'}]
-        with patch.object(m,'SessionProvider',return_value=provider), patch.object(m,'_approve') as approve:
-            self.assertTrue(json.loads(m.send(sid,'Test'))['ok']);approve.assert_not_called()
+        with patch.object(m,'SessionProvider',return_value=provider):
+            self.assertTrue(json.loads(m.send(sid,'Test'))['ok'])
+        tool=json.loads([x['text'] for x in json.loads(m.get_session(sid))['messages'] if x['role']=='tool'][0])
+        self.assertFalse(tool['result']['success'])
 
     def test_old_tool_notice_is_removed_without_losing_response(self):
         sid=json.loads(m.create_session('work'))['id']
@@ -87,14 +89,41 @@ class MobileTests(unittest.TestCase):
                 self.assertTrue(json.loads(m.send(sid,'Bonjour'))['ok'])
             self.assertTrue(any(item['content']=='Preference '+mode for item in json.loads(m.list_memory())))
 
-    def test_workspace_prevents_escape_and_requires_approval(self):
+    def test_workspace_prevents_escape_without_confirmation(self):
         self.assertFalse(m._tool('write_file', {'path':'../../outside', 'content':'x'})['success'])
-        with patch.object(m, '_approve', return_value=False):
-            self.assertFalse(m._tool('write_file', {'path':'test.txt','content':'x'})['success'])
-        with patch.object(m, '_approve', return_value=True):
-            self.assertTrue(m._tool('write_file', {'path':'test.txt','content':'hello'})['success'])
+        self.assertTrue(m._tool('write_file', {'path':'test.txt','content':'hello'})['success'])
         self.assertEqual(m._tool('read_file', {'path':'test.txt'})['content'], 'hello')
         self.assertFalse(m._tool('bash', {'command':'pwd'})['success'])
+
+    def test_shared_workspaces_are_isolated_by_mode_and_session(self):
+        shared=Path(self.temp.name)/'external'/'NEMESIS'
+        m.configure(self.temp.name,8090,'',str(shared))
+        a=json.loads(m.create_session('work'))['id']; b=json.loads(m.create_session('code'))['id']; c=json.loads(m.create_session('work'))['id']
+        for mode in ('Work','Code'): self.assertTrue((shared/mode).is_dir())
+        self.assertTrue(m._tool('write_file',{'path':'note.txt','content':'work'},a)['success'])
+        self.assertTrue(m._tool('write_file',{'path':'note.txt','content':'code'},b)['success'])
+        self.assertEqual((shared/'Work'/a/'note.txt').read_text(),'work')
+        self.assertEqual((shared/'Code'/b/'note.txt').read_text(),'code')
+        self.assertEqual(json.loads(m.list_files(c)),[])
+        self.assertFalse(m._tool('write_file',{'path':'../escape','content':'x'},a)['success'])
+        outside=Path(self.temp.name)/'outside'; outside.mkdir(); (shared/'Work'/a/'link').symlink_to(outside, target_is_directory=True)
+        self.assertFalse(m._tool('write_file',{'path':'link/escape','content':'x'},a)['success'])
+
+    def test_tool_message_is_visible_while_running(self):
+        sid=json.loads(m.create_session('work'))['id']; provider=Mock(); provider.url=None
+        action=json.dumps({'tool':'write_file','parameters':{'path':'report.txt','content':'ok'}})
+        provider.send_message.side_effect=[{'success':True,'response':'```json\n'+action+'\n```'}, {'success':True,'response':'Terminé'}]
+        original=m._tool
+        def run(name,args,session):
+            recorded=json.loads(m.get_session(sid))['messages']
+            tool=json.loads([x['text'] for x in recorded if x['role']=='tool'][-1])
+            self.assertTrue(tool['result']['pending'])
+            return original(name,args,session)
+        with patch.object(m,'SessionProvider',return_value=provider), patch.object(m,'_tool',side_effect=run):
+            self.assertTrue(json.loads(m.send(sid,'Créer un rapport'))['ok'])
+        recorded=json.loads(m.get_session(sid))['messages']; tool=json.loads([x['text'] for x in recorded if x['role']=='tool'][-1])
+        self.assertTrue(tool['result']['success'])
+
     def test_session_url_must_be_confirmed(self):
         sid=json.loads(m.create_session('chat'))['id']
         with m._db() as db: db.execute('UPDATE sessions SET uncertain=1 WHERE id=?',(sid,))
@@ -121,12 +150,27 @@ class MobileTests(unittest.TestCase):
         dns.assert_called_once(); sock.connect.assert_called_once_with(('93.184.216.34',443))
         context.wrap_socket.assert_called_once_with(sock, server_hostname='example.com')
 
-    def test_ssh_approval_never_hides_suffix(self):
-        with patch.object(m, '_approve', return_value=True) as approval:
-            result = m._tool('bash', {'command':'x' * 1001})
-            self.assertFalse(result['success']); approval.assert_not_called()
-            result = m._tool('bash', {'command':'echo ok\u202eevil'})
-            self.assertFalse(result['success']); approval.assert_not_called()
+    def test_long_ssh_command_runs_without_approval_dialog(self):
+        import sys, types
+        bridge=Mock(); bridge.execute.return_value=json.dumps({'success':True,'output':'ok'})
+        fake=types.SimpleNamespace(jclass=Mock(return_value=bridge))
+        with patch.dict(sys.modules, {'java':fake}):
+            result=m._tool('bash',{'command':'echo '+('x'*2000)})
+        self.assertTrue(result['success']); bridge.execute.assert_called_once()
+
+    def test_sftp_tool_stays_in_session_workspace(self):
+        import sys, types
+        shared=Path(self.temp.name)/'shared'; m.configure(self.temp.name,8090,'',str(shared))
+        sid=json.loads(m.create_session('work'))['id']
+        bridge=Mock(); bridge.download.return_value=json.dumps({'success':True,'size':7})
+        with patch.dict(sys.modules, {'java':types.SimpleNamespace(jclass=Mock(return_value=bridge))}):
+            result=m._tool('download_file',{'remote_path':'/workspace/result.pdf','path':'docs/result.pdf'},sid)
+            denied=m._tool('download_file',{'remote_path':'/workspace/result.pdf','path':'../escape'},sid)
+        self.assertTrue(result['success']);self.assertEqual(result['path'],'docs/result.pdf')
+        self.assertFalse(denied['success']); bridge.download.assert_called_once()
+
+    def test_ssh_rejects_unsafe_command_encoding(self):
+        self.assertFalse(m._tool('bash', {'command':'echo ok\u202eevil'})['success'])
     def test_work_response_has_no_unrequested_tool_notice(self):
         sid = json.loads(m.create_session('work'))['id']
         provider = Mock(); provider.url = None
@@ -206,11 +250,8 @@ class MobileTests(unittest.TestCase):
         ws=Path(self.temp.name)/'workspace'; (ws/'a.py').write_text('alpha\nbeta\n')
         self.assertIn('a.py',m._tool('glob',{'pattern':'*.py'})['files'])
         self.assertIn('a.py:2',m._tool('grep',{'pattern':'beta'})['matches'][0])
-        with patch.object(m,'_approve',return_value=False):
-            self.assertFalse(m._tool('append',{'path':'a.py','content':'x'})['success'])
-            self.assertFalse(m._tool('delete_file',{'path':'a.py'})['success'])
-        with patch.object(m,'_approve',return_value=True):
-            self.assertTrue(m._tool('append',{'path':'a.py','content':'gamma'})['success'])
+        self.assertTrue(m._tool('append',{'path':'a.py','content':'gamma'})['success'])
+        self.assertTrue(m._tool('delete_file',{'path':'a.py'})['success'])
         self.assertFalse(m._tool('delete_file',{'path':'../outside'})['success'])
     def test_code_todos_are_session_scoped(self):
         a=json.loads(m.create_session('code'))['id']; b=json.loads(m.create_session('code'))['id']
