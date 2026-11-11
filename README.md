@@ -20,4 +20,6 @@ JDK 17/21, Android SDK 34, Python 3.11 : `./gradlew :app:assembleDebug`. Pour le
 
 Installer avec `adb install -r` pour conserver les données : ne pas désinstaller NEMESIS ni effacer son stockage si la session DeepSeek doit être conservée. Une sauvegarde des cookies et du stockage WebView est sensible et ne doit jamais être placée dans Git. Sur un appareil non rooté, les données privées d’une autre application ne peuvent pas être copiées automatiquement.
 
+Un test Android instrumenté facultatif vérifie SSH avec un serveur temporaire et une empreinte incorrecte ; il est ignoré sans paramètres de test et ne remplace jamais une configuration SSH existante. Sur l’émulateur Android 8.1 x86, la connexion et le rejet de la mauvaise empreinte ont réussi avec un serveur Ed25519 temporaire. Les paramètres et le serveur de test ont ensuite été supprimés.
+
 Android 8.1 x86 a été testé dans l’émulateur. L’APK inclut `armeabi-v7a`, mais cette ABI n’a pas encore été testée sur un appareil représentatif. Le moteur automatise l’interface Web DeepSeek ; il peut cesser de fonctionner si celle-ci change et l’utilisation peut être soumise aux conditions du fournisseur. La copie NemApi-Apk conserve sa licence dans `nemapi/LICENSE-UPSTREAM`.

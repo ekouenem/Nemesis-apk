@@ -55,7 +55,7 @@ object SshBridge {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw.copyOfRange(0,12)))
         return String(cipher.doFinal(raw.copyOfRange(12,raw.size)), Charsets.UTF_8)
     }
-    fun clear() { prefs().edit().clear().apply() }
+    fun clear() { check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." } }
 
     @JvmStatic fun execute(command: String, timeoutSeconds: Int): String {
         val config = details(); var session: com.jcraft.jsch.Session? = null
