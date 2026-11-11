@@ -23,3 +23,11 @@ chaquopy {
         pip { install 'requests==2.32.4' }
     }
 }
+dependencies {
+    implementation project(':nemapi-embedded')
+    implementation 'com.github.mwiede:jsch:0.2.20'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.80'
+    implementation 'io.noties.markwon:core:4.6.2'
+    implementation 'io.noties.markwon:ext-tables:4.6.2'
+}
+android { packaging { resources { excludes += ['META-INF/versions/**', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'] } } }
