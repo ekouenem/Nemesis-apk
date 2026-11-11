@@ -66,7 +66,7 @@
     try {
       if (!el) return false;
       var r = el.getBoundingClientRect();
-      if (r.width <= 0 && r.height <= 0) return false;
+      if (r.width <= 0 || r.height <= 0) return false;
       var st = window.getComputedStyle(el);
       if (!st) return true;
       if (st.display === "none" || st.visibility === "hidden" || st.opacity === "0") return false;
@@ -345,9 +345,8 @@
 
     ready: function () {
       var el = findInput();
-      var login = /sign in|log in|登录|mot de passe|password/i.test(document.title || "")
-        ? false
-        : !!document.querySelector('input[type="password"]');
+      var passwordInput = document.querySelector('input[type="password"]');
+      var login = !!passwordInput && visible(passwordInput);
       return J({
         ok: !!el,
         has_input: !!el,
@@ -409,8 +408,13 @@
       return J({ ok: true, found: !!btn, disabled: btn ? disabled(btn) : true, dead: btn ? false : true });
     },
 
-    submit: function () {
+    submit: function (expectedUrl) {
+      // Check in the SAME JS call as submission, not in a previous async call:
+      // navigating between preparation and click must never mix conversations.
+      if (expectedUrl && String(location.href).replace(/\/$/, "") !== String(expectedUrl).replace(/\/$/, ""))
+        return J({ok:false,reason:"conversation_changed",not_submitted:true});
       var input = findInput();
+      if (!input) return J({ok:false,reason:"input_missing",not_submitted:true});
       var btn = findSend(input);
       if (btn && !disabled(btn)) {
         try {

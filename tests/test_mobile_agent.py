@@ -268,6 +268,22 @@ class MobileTests(unittest.TestCase):
         with patch.object(provider._session, 'post', return_value=response): provider._post_cancellable({'messages':[]},None)
         self.assertEqual(json.loads(m.get_session(sid))['uncertain'],0)
 
+    def test_navigation_503_with_explicit_not_submitted_unlocks_session(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=503
+        response.__enter__.return_value=response; response.__exit__.return_value=None
+        response.json.return_value={'error':{'message':'page non prête'},'not_submitted':True}
+        with patch.object(provider._session,'post',return_value=response): provider._post_cancellable({'messages':[]},None)
+        self.assertEqual(json.loads(m.get_session(sid))['uncertain'],0)
+
+    def test_navigation_503_without_proof_remains_uncertain(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=503
+        response.__enter__.return_value=response; response.__exit__.return_value=None
+        response.json.return_value={'error':{'message':'erreur inconnue'}}
+        with patch.object(provider._session,'post',return_value=response): provider._post_cancellable({'messages':[]},None)
+        self.assertEqual(json.loads(m.get_session(sid))['uncertain'],1)
+
     def test_rename_pin_and_persistence(self):
         a=json.loads(m.create_session('chat'))['id']; b=json.loads(m.create_session('work'))['id']
         self.assertTrue(json.loads(m.rename_session(a,'Projet'))['ok']); self.assertTrue(json.loads(m.pin_session(a,True))['ok'])

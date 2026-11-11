@@ -504,6 +504,22 @@ class MainActivity : Activity() {
         currentSession=id; currentMode=session.optString("mode","chat"); screen="chat"; frame()
         root.addView(topBar("NEMESIS",modeName(currentMode)+" · DeepSeek")); root.addView(separator())
         val (scroll,body)=scrollArea(16)
+        // The shortcut floats above the discussion, not inside the growing
+        // message list, and only appears when more content is below the reader.
+        root.removeView(scroll)
+        val scrollLayer=FrameLayout(this)
+        scrollLayer.addView(scroll,FrameLayout.LayoutParams(-1,-1))
+        val down=label("↓",22f,primary,true).apply {
+            gravity=Gravity.CENTER; background=shape(white,99,line); elevation=dp(5).toFloat()
+            contentDescription="Aller en bas de la discussion"; isClickable=true; isFocusable=true; visibility=View.GONE
+            setOnClickListener { scroll.smoothScrollTo(0,body.height) }
+        }
+        scrollLayer.addView(down,FrameLayout.LayoutParams(dp(48),dp(48),Gravity.BOTTOM or Gravity.END).apply { marginEnd=dp(16); bottomMargin=dp(16) })
+        fun updateDownButton() { down.visibility=if(scroll.canScrollVertically(1)) View.VISIBLE else View.GONE }
+        scroll.setOnScrollChangeListener { _:View, _:Int, _:Int, _:Int, _:Int -> updateDownButton() }
+        body.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateDownButton() }
+        scroll.post { updateDownButton() }
+        root.addView(scrollLayer,LinearLayout.LayoutParams(-1,0,1f))
         val messages=session.optJSONArray("messages") ?: JSONArray()
         if(messages.length()==0) {
             body.addView(gap(55)); body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,14); clipToOutline=true; contentDescription="Logo NEMESIS" }, LinearLayout.LayoutParams(dp(52),dp(52)).apply { gravity=Gravity.CENTER_HORIZONTAL })

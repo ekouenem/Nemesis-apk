@@ -75,11 +75,13 @@ object DeepSeek {
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean = { false },
         onKeepAlive: () -> Unit = {},
-        onSubmitAttempt: () -> Unit = {}
+        onSubmitAttempt: () -> Unit = {},
+        onSubmitNotAttempted: () -> Unit = {},
+        expectedUrl: String? = null
     ): String {
         if (!AppState.busy.compareAndSet(false, true)) throw NemApiException.busy()
         try {
-            return run(messages, onDelta, shouldCancel, onKeepAlive, onSubmitAttempt)
+            return run(messages, onDelta, shouldCancel, onKeepAlive, onSubmitAttempt, onSubmitNotAttempted, expectedUrl)
         } finally {
             AppState.busy.set(false)
         }
@@ -90,21 +92,17 @@ object DeepSeek {
         onDelta: (String) -> Unit,
         shouldCancel: () -> Boolean,
         onKeepAlive: () -> Unit,
-        onSubmitAttempt: () -> Unit
+        onSubmitAttempt: () -> Unit,
+        onSubmitNotAttempted: () -> Unit,
+        expectedUrl: String?
     ): String {
         if (!com.nemap.android.web.WebViewHost.isCreated) {
             throw NemApiException.notReady("Le navigateur intégré n'est pas ouvert : ouvre l'app NemApi puis l'onglet du provider.")
         }
 
-        Engine.ensureAdapter()
-        val ready = Engine.adapter("ready")
-        if (!ready.optBoolean("ok")) {
-            if (ready.optBoolean("login_required")) throw NemApiException.login()
-            val why = ready.optString("reason", "input_missing")
-            throw NemApiException.notReady(
-                "La page DeepSeek n'est pas prête ($why). Ouvre l'onglet du provider et vérifie que tu es connecté."
-            )
-        }
+        // The page can transiently lose the input even immediately after URL
+        // navigation finished. Retry readiness only BEFORE submission.
+        awaitComposer(shouldCancel, onKeepAlive, expectedUrl)
 
         val prompt = buildPrompt(messages)
         AppState.promptChars.addAndGet(prompt.length.toLong())
@@ -118,7 +116,11 @@ object DeepSeek {
         if (images.isNotEmpty()) attachImages(images, shouldCancel)
 
         // 1) écrire le prompt — avec vérification que la page l'a bien pris
-        val set = Engine.setPrompt(prompt)
+        var set = Engine.setPrompt(prompt)
+        if (!set.optBoolean("ok") && set.optString("reason") == "input_missing") {
+            awaitComposer(shouldCancel, onKeepAlive, expectedUrl)
+            set = Engine.setPrompt(prompt) // only writing a draft, never submitting it
+        }
         // A navigation can reset the JS buffer between chunks. Never submit an
         // empty or partial prompt even if the adapter considers it successful.
         if (!set.optBoolean("ok") || set.optInt("want", -1) != prompt.length || set.optInt("len", 0) <= 0) {
@@ -140,8 +142,9 @@ object DeepSeek {
         // 3) envoyer
         // Once the submit call starts its outcome may be unknown even on error.
         onSubmitAttempt()
-        val sub = Engine.adapter("submit")
+        val sub = Engine.adapter("submit", expectedUrl)
         if (!sub.optBoolean("ok")) {
+            if (sub.optBoolean("not_submitted")) onSubmitNotAttempted()
             throw NemApiException(
                 NemApiException.SELECTOR_MISSING,
                 "Impossible de déclencher l'envoi (${sub.optString("reason")})."
@@ -331,6 +334,31 @@ object DeepSeek {
         }
         if (disabledDeadline != 0L) NemLog.w("dom", "action « Continue » restée désactivée pendant 20 s")
         return false
+    }
+
+    private suspend fun awaitComposer(shouldCancel: () -> Boolean, onKeepAlive: () -> Unit, expectedUrl: String?) {
+        val start = android.os.SystemClock.elapsedRealtime()
+        var loginObserved = false
+        var differentUrl = false
+        var lastKeepAlive = start
+        while (android.os.SystemClock.elapsedRealtime() - start < 20_000L) {
+            if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
+            try {
+                differentUrl = expectedUrl != null && Engine.currentUrl().trimEnd('/') != expectedUrl.trimEnd('/')
+                if (!differentUrl) {
+                    Engine.ensureAdapter()
+                    val ready=Engine.adapter("ready", timeoutMs=3_000)
+                    if (ready.optBoolean("ok")) return
+                    loginObserved = loginObserved || ready.optBoolean("login_required")
+                }
+            } catch(_: NemApiException) { /* transient DOM/renderer failure before submit */ }
+            val now=android.os.SystemClock.elapsedRealtime()
+            if (now-lastKeepAlive>=5_000L) { try { onKeepAlive() } catch (_: Throwable) {}; lastKeepAlive=now }
+            delay(400)
+        }
+        if (differentUrl) throw NemApiException.notReady("La discussion DeepSeek a changé ; aucun message n'a été envoyé.")
+        if (loginObserved) throw NemApiException.login()
+        throw NemApiException.notReady("Le champ de saisie DeepSeek reste indisponible après attente ; aucun message n'a été envoyé. Vérifiez la page DeepSeek et réessayez.")
     }
 
     private suspend fun waitSendReady(budgetMs: Long, shouldCancel: () -> Boolean): Boolean {

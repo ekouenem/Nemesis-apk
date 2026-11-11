@@ -47,6 +47,15 @@ class InterfaceStreamingInstrumentedTest {
             Thread.sleep(1200); inst.waitForIdleSync()
             scroll=children(a.window.decorView).filterIsInstance<ScrollView>().first()
             assertEquals("Rebuilding messages must preserve the reader position",0,scroll.scrollY)
+            val down=children(a.window.decorView).first { it.contentDescription=="Aller en bas de la discussion" }
+            assertEquals("The down shortcut appears when there is content below",View.VISIBLE,down.visibility)
+            inst.runOnMainSync { down.performClick() }
+            val deadline=System.currentTimeMillis()+5000
+            var canScroll=true
+            while (canScroll && System.currentTimeMillis()<deadline) {
+                Thread.sleep(100); inst.runOnMainSync { canScroll=scroll.canScrollVertically(1) }
+            }
+            assertFalse("The shortcut reaches the bottom",canScroll)
         } finally { busy.set(JobRunner,null); m.callAttr("delete_session",id); a.finish() }
     }
 }

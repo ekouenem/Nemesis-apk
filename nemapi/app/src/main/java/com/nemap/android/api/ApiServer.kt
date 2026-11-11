@@ -533,7 +533,8 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                     DeepSeek.chat(
                         messages = requestMsgs,
                         onDelta = { },
-                        shouldCancel = { cancelled.get() }
+                        shouldCancel = { cancelled.get() },
+                        expectedUrl = nemesisSession?.let { NemesisSession.targetUrl(it) }
                     )
                 }
                 val text = rawText
@@ -577,8 +578,8 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
         // Prepare navigation before sending HTTP headers: a preparation failure sends no prompt.
         if (nemesisSession != null) {
             try { runBlocking { NemesisSession.prepare(nemesisSession) } }
-            catch (e: NemApiException) { sendJson(out, httpFor(e.code), errorJson(e.code, e.message)); return }
-            catch (t: Throwable) { sendJson(out, 500, errorJson("upstream_error", t.message ?: "Erreur interne")); return }
+            catch (e: NemApiException) { sendJson(out, httpFor(e.code), JSONObject(errorJson(e.code, e.message)).put("not_submitted", true).toString()); return }
+            catch (t: Throwable) { sendJson(out, 500, JSONObject(errorJson("upstream_error", t.message ?: "Erreur interne")).put("not_submitted", true).toString()); return }
         }
 
         // ---- streaming SSE ----
@@ -630,6 +631,8 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                     },
                     shouldCancel = { cancelled.get() },
                     onSubmitAttempt = { submissionAttempted = true },
+                    onSubmitNotAttempted = { submissionAttempted = false },
+                    expectedUrl = nemesisSession?.let { NemesisSession.targetUrl(it) },
                     onKeepAlive = {
                         try { out.write(": keep-alive\n\n".toByteArray(Charsets.UTF_8)); out.flush() }
                         catch (_: Throwable) { cancelled.set(true) }

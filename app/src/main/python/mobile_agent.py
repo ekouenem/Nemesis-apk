@@ -632,10 +632,12 @@ class SessionProvider(NemapiV3Provider):
                         timeout=(10, None)) as response:
                 if response.status_code != 200:
                     response.content  # Preserve the body before closing the response.
-                    try: message = response.json().get('error', {}).get('message', '')
-                    except Exception: message = ''
-                    # Only this explicit navigation-stage failure guarantees that no prompt was submitted.
-                    not_submitted = message == "Conversation DeepSeek non prête ; aucun message n'a été envoyé."
+                    try: error_body = response.json()
+                    except Exception: error_body = {}
+                    message = error_body.get('error', {}).get('message', '')
+                    # Only explicit pre-submission metadata (or the legacy navigation
+                    # message) permits clearing uncertainty on a server error.
+                    not_submitted = error_body.get('not_submitted') is True or message == "Conversation DeepSeek non prête ; aucun message n'a été envoyé."
                     if not_submitted or response.status_code < 500:
                         with _db() as db: db.execute('UPDATE sessions SET uncertain=0 WHERE id=?', (self.sid,))
                     return response

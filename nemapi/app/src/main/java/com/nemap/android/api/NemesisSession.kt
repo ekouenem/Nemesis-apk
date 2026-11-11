@@ -23,7 +23,7 @@ object NemesisSession {
 
     private fun normalized(url: String) = url.trimEnd('/')
 
-    suspend fun prepare(config: JSONObject) {
+    fun targetUrl(config: JSONObject): String {
         val fresh = config.optBoolean("fresh_chat", false)
         val url = config.optString("conversation_url", "").trim()
         if (fresh == url.isNotEmpty()) throw NemApiException(
@@ -33,26 +33,34 @@ object NemesisSession {
         if (!fresh && !validConversationUrl(url)) throw NemApiException(
             NemApiException.PROVIDER_NOT_CONFIGURED, "URL de conversation DeepSeek invalide."
         )
+        return if (fresh) HOME else url
+    }
+
+    suspend fun prepare(config: JSONObject) {
+        val fresh = config.optBoolean("fresh_chat", false)
+        val target = targetUrl(config)
         if (!WebViewHost.isCreated) throw NemApiException.notReady("Ouvre d'abord DeepSeek dans NemApi.")
-        val target = if (fresh) HOME else url
         val current = try { Engine.currentUrl() } catch (_: Throwable) { "" }
         if (fresh || normalized(current) != normalized(target)) {
             withContext(Dispatchers.Main) { WebViewHost.load(target) }
-            val deadline = android.os.SystemClock.elapsedRealtime() + 45_000
-            while (android.os.SystemClock.elapsedRealtime() < deadline) {
-                delay(350)
-                try {
-                    val now = Engine.currentUrl()
-                    val atTarget = normalized(now) == normalized(target)
-                    val stableMs = android.os.SystemClock.elapsedRealtime() - WebViewHost.lastPageEventAt
-                    if (atTarget && !WebViewHost.pageLoading && stableMs >= 3500 && Engine.evalJs("document.readyState") == "complete") {
-                        Engine.ensureAdapter()
-                        if (Engine.adapter("ready").optBoolean("ok")) return
-                    }
-                } catch (_: Throwable) { /* WebView may still be navigating. */ }
-            }
-            throw NemApiException.timeout("Conversation DeepSeek non prête ; aucun message n'a été envoyé.")
         }
+        // Even if URL already matches, the page can be loading, rebuilding the
+        // React composer, or recovering from a renderer crash. Never treat URL
+        // equality alone as proof the input is ready.
+        val deadline = android.os.SystemClock.elapsedRealtime() + 45_000
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            delay(350)
+            try {
+                val now = Engine.currentUrl()
+                val atTarget = normalized(now) == normalized(target)
+                val stableMs = android.os.SystemClock.elapsedRealtime() - WebViewHost.lastPageEventAt
+                if (atTarget && !WebViewHost.pageLoading && stableMs >= 1000 && Engine.evalJs("document.readyState") == "complete") {
+                    Engine.ensureAdapter()
+                    if (Engine.adapter("ready").optBoolean("ok")) return
+                }
+            } catch (_: Throwable) { /* WebView may still be navigating. */ }
+        }
+        throw NemApiException.timeout("Conversation DeepSeek non prête ; aucun message n'a été envoyé.")
     }
 
     suspend fun resultUrl(): String? {
