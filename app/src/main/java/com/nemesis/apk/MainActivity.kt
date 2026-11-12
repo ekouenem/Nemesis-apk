@@ -61,6 +61,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
+        NemesisService.setEnabled(applicationContext,true)
         com.nemap.android.EmbeddedRuntime.start(applicationContext)
         window.statusBarColor = white; window.navigationBarColor = white
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
@@ -196,6 +197,12 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
+        if (!NemesisService.isEnabled(applicationContext)) {
+            NemesisService.setEnabled(applicationContext,true)
+            com.nemap.android.EmbeddedRuntime.start(applicationContext)
+            if (!busy) configureStorage()
+            startForegroundService(Intent(this, NemesisService::class.java))
+        }
         webHost?.let { com.nemap.android.web.WebViewHost.bindContainer(it) }
         currentSession?.let { if (screen == "chat") showChat(it) }
     }

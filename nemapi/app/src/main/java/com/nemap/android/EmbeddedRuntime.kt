@@ -40,6 +40,12 @@ object EmbeddedRuntime {
             server.stop(); api = null; secret = ""; throw e
         }
     }
+    @JvmStatic @Synchronized fun stop() {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "Runtime requires main thread" }
+        api?.stop(); api = null; enabled = false
+        AppState.serviceRunning = false
+        // Keep the secret and port stable in this process for the existing Python bridge.
+    }
     @JvmStatic fun port(): Int = api?.boundPort() ?: -1
     @JvmStatic fun token(): String = secret
 }

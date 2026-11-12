@@ -4,7 +4,7 @@
 
 ## Version de référence
 
-La présente itération vise la préversion **v0.1.0-beta.5**, succédant à beta.4, et ne modifie pas le tag beta.4. Vérifier le tag et les notes GitHub pour le commit exact et le SHA-256 de l’APK publiée. `versionCode 6`, `versionName 0.1.0-beta.5`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`.
+La présente itération vise la préversion **v0.1.0-beta.6**, succédant à beta.5, sans modifier les anciens tags. Vérifier le tag et les notes GitHub pour le commit exact et le SHA-256 de l’APK publiée. `versionCode 7`, `versionName 0.1.0-beta.6`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`.
 
 - Dépôt de travail : `ekouenem/Nemesis-apk`, branche `main` ; ne rien pousser dans le dépôt NemApi-Apk d’origine.
 - Beta.4 : commit `d5e9a1c42b1b8fe48e2519bc7b51136ecd21d01d`, SHA APK `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce` ; sa release reste inchangée.
@@ -15,6 +15,11 @@ La présente itération vise la préversion **v0.1.0-beta.5**, succédant à bet
 Une APK Android native intègre NemApi et l’adaptation Python 3.11 / Chaquopy de NEMESIS-AGENT ; le provider, pas le modèle, est local. Le fournisseur est DeepSeek via WebView. L’ancien plan de documentation Kotlin/Koog, interface WebView générale et exécuteurs Termux/cloud ne décrit pas l’implémentation livrée. L’interface de NEMESIS est native ; la WebView sert au fournisseur. La boucle Python d’origine est adaptée progressivement, pas entièrement portée.
 
 Entrées importantes : `app/src/main/java/com/nemesis/apk/MainActivity.kt` (interface), `JobRunner.kt`, `NemesisService.kt`, `RuntimeRecoveryJob.kt`, `SshBridge.kt`, ponts MCP ; `app/src/main/python/mobile_agent.py`, `providers/nemapi_v3.py`, `action_parser.py`, `mcp_client.py`, `skill_store.py` ; `nemapi/app/src/main/java/com/nemap/android/api/NemesisSession.kt`, `ApiServer.kt`, `core/DeepSeek.kt`, `web/Engine.kt`, `web/WebViewHost.kt` et `nemapi/app/src/main/assets/js/adapter-deepseek.js`. Parcourir le code avant de modifier ces composants.
+
+## Changements beta.6
+
+- La notification de service ajoute « Fermer » : arrêt de l’écoute NemApi, du watchdog et du job périodique ; état explicitement arrêté persistant. Rouvrir l’activité réactive le service. Les requêtes ou commandes déjà engagées ne sont pas garanties interrompues. La WebView n’est pas effacée. Un test instrumenté vérifie notification, port, job et redémarrage.
+- Script public [nemesis-termux-ssh](https://github.com/nemesishighschool-cloud/nemesis-termux-ssh) : installation OpenSSH, alias de connexion et mot de passe, serveur local, lancement pour une nouvelle session Bash interactive. Termux mono-utilisateur : pas de vrai nouveau compte isolé ; ne pas prétendre le contraire. Une commande via l’outil Bash NEMESIS et un rapatriement SFTP depuis le véritable Termux sur émulateur Android 8.1 x86 ont réussi. Pas de test ARM physique, ni garantie Android en arrière-plan.
 
 ## Changements beta.5
 

@@ -2,16 +2,20 @@
 
 NEMESIS est une application Android native qui réunit, dans une seule APK, une interface de conversation et une adaptation du moteur d’agent Python de NEMESIS-AGENT, reliées à une copie intégrée de NemApi-Apk. Le seul fournisseur intégré actuellement est **DeepSeek** : l’utilisateur doit s’y connecter dans l’application. L’API locale ne rend pas le modèle autonome ni utilisable hors ligne.
 
-> **Préversion : v0.1.0-beta.5.** Elle est utilisable pour les essais, mais les limites ci-dessous restent importantes. L’architecture réelle est native Kotlin + Python/Chaquopy + NemApi/WebView, et non l’architecture Kotlin/Koog décrite dans un ancien plan provisoire.
+> **Préversion : v0.1.0-beta.6.** Elle est utilisable pour les essais, mais les limites ci-dessous restent importantes. L’architecture réelle est native Kotlin + Python/Chaquopy + NemApi/WebView, et non l’architecture Kotlin/Koog décrite dans un ancien plan provisoire.
 
 ## Installation
 
-- [Télécharger l’APK beta.5](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.5/NEMESIS-v0.1.0-beta.5.apk) · [Notes de version](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.5)
+- [Télécharger l’APK beta.6](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.6/NEMESIS-v0.1.0-beta.6.apk) · [Notes de version](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.6)
 - Android minimum déclaré : **8.0 / API 26** ; cible de terrain : Android 8.1. Architectures incluses : `armeabi-v7a` et `x86`, 32 bits. Les essais Android ont été faits sur émulateur **x86 Android 8.1**, pas sur appareil ARM ; la présence d’une ABI n’est pas une validation matérielle.
-- APK **debug**, pas une signature de production. La beta.5 est signée avec la même clé de développement que la beta.4 : l’installation par-dessus devrait préserver les données. Sauvegardez-les au préalable. Si la clé de signature est perdue, une future mise à jour pourra nécessiter une réinstallation et entraîner la perte des données privées.
+- APK **debug**, pas une signature de production. La beta.6 est signée avec la même clé de développement que la beta.5 : l’installation par-dessus devrait préserver les données. Sauvegardez-les au préalable. Si la clé de signature est perdue, une future mise à jour pourra nécessiter une réinstallation et entraîner la perte des données privées.
 - SHA-256 : voir les notes de la release pour l’empreinte du fichier publié.
 
 Ouvrez l’application et configurez DeepSeek dans son interface intégrée. La session est conservée dans le stockage privé de la WebView quand Android le permet, mais une reconnexion ou un CAPTCHA peuvent être demandés. La connexion Google automatique du compte Android n’est pas intégrée : OAuth Google interdit l’utilisation d’une WebView embarquée et le navigateur système ne partage pas automatiquement ses cookies avec celle-ci.
+
+La notification « NEMESIS actif » propose **Fermer** : l’écoute du serveur NemApi et sa relance planifiée sont arrêtées. Ouvrir de nouveau NEMESIS les réactive. Une requête ou commande déjà lancée peut ne pas s’interrompre immédiatement. La WebView et ses données de session ne sont pas effacées. Android peut limiter les notifications et services en arrière-plan.
+
+Pour utiliser Termux sur le même appareil, consultez le [script public d’installation SSH](https://github.com/nemesishighschool-cloud/nemesis-termux-ssh). Le serveur écoute localement par défaut ; le nom choisi est un alias du compte unique Termux, pas un compte isolé. La commande Bash et le transfert SFTP NEMESIS → Termux ont été testés sur émulateur Android 8.1 x86.
 
 ## Utilisation
 

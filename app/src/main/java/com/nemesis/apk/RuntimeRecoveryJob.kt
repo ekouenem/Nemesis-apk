@@ -12,6 +12,7 @@ import android.content.Intent
  * Android may defer periodic jobs or block foreground starts; no availability guarantee. */
 class RuntimeRecoveryJob : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
+        if (!NemesisService.isEnabled(applicationContext)) return false
         try { startForegroundService(Intent(this,NemesisService::class.java)) }
         catch(e:Exception) { android.util.Log.w("NEMESIS", "Redémarrage différé par Android",e) }
         return false
@@ -19,7 +20,9 @@ class RuntimeRecoveryJob : JobService() {
     override fun onStopJob(params: JobParameters?): Boolean = true
     companion object {
         const val ID=4102
+        fun cancel(context:Context) { context.getSystemService(JobScheduler::class.java).cancel(ID) }
         @Synchronized fun schedule(context:Context) {
+            if (!NemesisService.isEnabled(context)) return
             val scheduler=context.getSystemService(JobScheduler::class.java)
             // Replacing a running periodic job resets its interval and can cause
             // a tight restart loop. Keep the already scheduled job intact.

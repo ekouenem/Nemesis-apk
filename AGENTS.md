@@ -1,6 +1,6 @@
 # Consignes de travail — NEMESIS Android
 
-Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.5`. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
+Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.6`. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
 
 ## Lieu et périmètre
 
@@ -32,3 +32,5 @@ Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`g
 - Quand une release est explicitement demandée, vérifier le statut Git, l’APK, son SHA-256, sa signature, version/minSdk/ABIs, les résultats des tests et les limites. Signaler une APK debug comme telle. Ne jamais inclure la clé de signature ni des données utilisateur dans la publication.
 
 Les gros fichiers utilisent un chemin temporaire privé et des morceaux pour éviter les grandes chaînes base64 : toute modification doit conserver la validation de chemin, les limites et les tests sans publier de données privées. Un retour à l’accueil ne doit pas masquer la page DeepSeek courante lors d’une vérification.
+
+- Bêta.6 : l’action Fermer de la notification stoppe le serveur embarqué et annule le job de récupération ; à la réouverture, l’activité réactive le service. Ne pas compromettre les cookies ni relancer automatiquement le service après fermeture explicite. Le script Termux vit dans le dépôt public distinct `nemesishighschool-cloud/nemesis-termux-ssh` ; son nom de connexion est un alias Termux, pas un compte isolé.
