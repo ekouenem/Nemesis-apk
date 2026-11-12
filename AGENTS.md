@@ -1,12 +1,12 @@
 # Consignes de travail — NEMESIS Android
 
-Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.4`. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
+Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.5`. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
 
 ## Lieu et périmètre
 
 - Travailler dans le Codespace 2 cœurs de l’utilisateur, dépôt `ekouenem/Nemesis-apk` ; développement et tests dans le Codespace, pas sur une copie locale. Vérifier l’accès et l’état avant toute modification.
 - NemApi est intégré dans l’APK de NEMESIS ; ne rien pousser vers le dépôt NemApi-Apk original. Conserver le moteur Python adapté et ne pas le réécrire de zéro sans décision explicite.
-- L’ancien plan architectural est provisoire et ne décrit pas le produit beta.4. Décrire le code tel qu’il est, pas des composants imaginés.
+- L’ancien plan architectural est provisoire et ne décrit pas le produit actuel. Décrire le code tel qu’il est, pas des composants imaginés.
 - Respecter les demandes de l’utilisateur, lui donner régulièrement des nouvelles et signaler les limites concrètes. Ne pas prétendre qu’un test ou une fonctionnalité non vérifiés sont opérationnels.
 
 ## Données, accès et opérations
@@ -30,3 +30,5 @@ Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`g
 - Éviter les campagnes artificielles de prompts DeepSeek. Les tests réels instrumentés sont opt-in ; comprendre leurs effets, préserver les données et limiter strictement les appels. Ne pas relancer les tests de réponse longue si l’utilisateur ne le souhaite pas.
 - La continuation automatique longue n’est pas validée de bout en bout. La notification du service sur Android 8.1 et l’absence de connexion Google automatique ont des limites de plateforme : ne pas promettre leur résolution sans vérification.
 - Quand une release est explicitement demandée, vérifier le statut Git, l’APK, son SHA-256, sa signature, version/minSdk/ABIs, les résultats des tests et les limites. Signaler une APK debug comme telle. Ne jamais inclure la clé de signature ni des données utilisateur dans la publication.
+
+Les gros fichiers utilisent un chemin temporaire privé et des morceaux pour éviter les grandes chaînes base64 : toute modification doit conserver la validation de chemin, les limites et les tests sans publier de données privées. Un retour à l’accueil ne doit pas masquer la page DeepSeek courante lors d’une vérification.

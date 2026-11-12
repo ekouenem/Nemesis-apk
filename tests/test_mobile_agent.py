@@ -13,14 +13,11 @@ class MobileTests(unittest.TestCase):
         m.configure(self.temp.name); self.assertEqual(len(json.loads(m.list_sessions())), 2)
     def test_web_search_reports_bot_challenge_as_error(self):
         from src.core.tools import web_search as search_module
-        response = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(); response.status = 202
-        response.read.return_value = b"<html>anomaly-modal challenge</html>"
-        response.__enter__ = Mock(return_value=response); response.__exit__ = Mock(return_value=False)
-        with patch.object(search_module, "_ddg_search", side_effect=ImportError), \
-             patch.object(search_module.urllib.request, "urlopen", return_value=response):
-            result = m._tool("web_search", {"query":"NASA Artemis"})
-        self.assertFalse(result["success"])
-        self.assertIn("anti-robot", result["error"])
+        with patch.object(search_module, '_wiki_search', side_effect=RuntimeError('indisponible')), \
+             patch.object(search_module, '_bing_rss_search', side_effect=RuntimeError('indisponible')), \
+             patch.object(search_module, '_ddg_html_search', side_effect=RuntimeError('Vérification anti-robot demandée')):
+            result = m._tool('web_search', {'query':'NASA Artemis'})
+        self.assertFalse(result['success']); self.assertIn('anti-robot', result['error'])
 
     def test_memory_enabled_by_default_crud_and_opt_out(self):
         self.assertTrue(json.loads(m.get_preferences())['memory_enabled'])
@@ -102,11 +99,11 @@ class MobileTests(unittest.TestCase):
         for mode in ('Work','Code'): self.assertTrue((shared/mode).is_dir())
         self.assertTrue(m._tool('write_file',{'path':'note.txt','content':'work'},a)['success'])
         self.assertTrue(m._tool('write_file',{'path':'note.txt','content':'code'},b)['success'])
-        self.assertEqual((shared/'Work'/a/'note.txt').read_text(),'work')
-        self.assertEqual((shared/'Code'/b/'note.txt').read_text(),'code')
+        self.assertEqual((Path(m.workspace_root(a))/'note.txt').read_text(),'work')
+        self.assertEqual((Path(m.workspace_root(b))/'note.txt').read_text(),'code')
         self.assertEqual(json.loads(m.list_files(c)),[])
         self.assertFalse(m._tool('write_file',{'path':'../escape','content':'x'},a)['success'])
-        outside=Path(self.temp.name)/'outside'; outside.mkdir(); (shared/'Work'/a/'link').symlink_to(outside, target_is_directory=True)
+        outside=Path(self.temp.name)/'outside'; outside.mkdir(); (Path(m.workspace_root(a))/'link').symlink_to(outside, target_is_directory=True)
         self.assertFalse(m._tool('write_file',{'path':'link/escape','content':'x'},a)['success'])
 
     def test_tool_message_is_visible_while_running(self):
@@ -192,7 +189,8 @@ class MobileTests(unittest.TestCase):
             result=json.loads(m.send(sid,'Lis le document',json.dumps([{'path':str(file),'name':'notes.txt','mime':'text/plain'}])))
         self.assertTrue(result['ok']); part=provider.send_message.call_args.kwargs['images'][0]
         self.assertEqual(part['type'],'file'); self.assertEqual(part['file']['filename'],'notes.txt')
-        self.assertEqual(base64.b64decode(part['file']['file_data'].split(',',1)[1]),b'ATTACHMENT_TEST_TOKEN')
+        self.assertEqual(Path(part['file']['local_path']).read_bytes(),b'ATTACHMENT_TEST_TOKEN')
+        message=json.loads(m.get_session(sid))['messages'][0]; self.assertEqual(message['attachments'][0]['name'],'notes.txt')
     def test_pdf_and_office_attachments_use_native_file_parts(self):
         sid=json.loads(m.create_session('work'))['id']; folder=Path(self.temp.name)/'attachments'; folder.mkdir()
         files=[]
@@ -203,7 +201,7 @@ class MobileTests(unittest.TestCase):
         self.assertTrue(result['ok']); parts=provider.send_message.call_args.kwargs['images']
         self.assertEqual([part['type'] for part in parts],['file','file'])
         self.assertEqual([part['file']['filename'] for part in parts],['document.pdf','rapport.docx'])
-        self.assertEqual(base64.b64decode(parts[0]['file']['file_data'].split(',',1)[1]),b'%PDF-1.4 sample')
+        self.assertEqual(Path(parts[0]['file']['local_path']).read_bytes(),b'%PDF-1.4 sample')
 
     def test_uncertain_session_can_only_be_explicitly_recovered_using_valid_url(self):
         sid=json.loads(m.create_session('work'))['id']; url='https://chat.deepseek.com/a/chat/s/testabc123'

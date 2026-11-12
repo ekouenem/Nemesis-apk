@@ -387,14 +387,16 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                             "file", "input_file" -> {
                                 val f = part.optJSONObject("file") ?: part
                                 val url = f.optString("file_data", f.optString("file_url", f.optString("url", "")))
+                                val localPath = f.optString("local_path", "")
                                 val filename = f.optString("filename", part.optString("filename", "document.pdf"))
                                 if (url.isEmpty() && f.has("file_id")) {
                                     throw IllegalArgumentException("file_id nécessite l'endpoint OpenAI Files, non fourni par ce proxy; envoie file_data ou file_url.")
                                 }
-                                if (url.isEmpty()) throw IllegalArgumentException("Partie file sans file_data ni file_url.")
+                                if (url.isEmpty() && localPath.isEmpty()) throw IllegalArgumentException("Partie file sans contenu.")
                                 if (attachments.size >= MAX_ATTACHMENTS) throw IllegalArgumentException("Trop de pièces jointes (maximum $MAX_ATTACHMENTS).")
                                 val mimeHint = f.optString("mime_type", f.optString("mime", "application/pdf"))
-                                val items = decodeAttachment(url, filename, mimeHint)
+                                val items = if (localPath.isNotEmpty()) decodePrivateAttachment(localPath, filename, mimeHint)
+                                    else decodeAttachment(url, filename, mimeHint)
                                 if (items.isEmpty()) throw IllegalArgumentException("Pièce jointe non décodable : $filename")
                                 if (items.size > MAX_ATTACHMENTS - attachments.size) {
                                     throw IllegalArgumentException("Le PDF dépasse la limite de $MAX_ATTACHMENTS pages/images jointes.")
@@ -414,9 +416,29 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                 else -> ""
             }
             if (attachments.size > MAX_ATTACHMENTS) throw IllegalArgumentException("Trop de pièces jointes (maximum $MAX_ATTACHMENTS).")
+            if (attachments.sumOf { it.length() } > 64L*1024*1024) throw IllegalArgumentException("Pièces jointes limitées à 64 Mo au total.")
             msgs.add(Msg(role, text, attachments))
         }
         return msgs to root
+    }
+
+    /** A private path is accepted only in embedded authenticated mode and only
+     * from the app's own attachment staging directory; never arbitrary paths. */
+    private fun decodePrivateAttachment(path:String, filename:String, mimeHint:String):List<ImagePart> {
+        if (internalToken == null) throw IllegalArgumentException("Chemin local indisponible pour l’API externe.")
+        val root=java.io.File(context.filesDir,"attachments").canonicalFile
+        val file=java.io.File(path).canonicalFile
+        if (!file.path.startsWith(root.path+java.io.File.separator) || !file.isFile) throw IllegalArgumentException("Pièce jointe locale inaccessible.")
+        val pdf=mimeHint.equals("application/pdf",true) || filename.endsWith(".pdf",true)
+        val max=if(pdf) 50L*1024*1024 else 20L*1024*1024
+        if(file.length()<=0 || file.length()>max) throw IllegalArgumentException("Fichier vide ou trop volumineux (limite ${max/1024/1024} Mo).")
+        if(pdf) {
+            val head=ByteArray(5)
+            if(file.inputStream().use { it.read(head) } != 5 || String(head,Charsets.US_ASCII)!="%PDF-")
+                throw IllegalArgumentException("Le fichier déclaré PDF est invalide.")
+        }
+        val mime=if(pdf) "application/pdf" else mimeHint
+        return listOf(ImagePart(mime,safeFilename(filename,mime),ByteArray(0),file))
     }
 
     /** Décode les formes OpenAI file_data/file_url et prépare les PDF en pages image pour le provider web. */

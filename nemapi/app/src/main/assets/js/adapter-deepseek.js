@@ -515,10 +515,13 @@
         var o = JSON.parse(payload);
         if (o.first || !ATT.cur) {
           if (ATT.cur) ATT.items.push(ATT.cur);
-          ATT.cur = { mime: o.mime || "image/png", name: o.name || "image.png", b64: "" };
+          ATT.cur = { mime: o.mime || "image/png", name: o.name || "image.png", parts: [], bytes: 0 };
         }
-        ATT.cur.b64 += (o.b64 || "");
-        return J({ ok: true, n: ATT.items.length + 1, chars: ATT.cur.b64.length });
+        var bin = atob(o.b64 || "");
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        ATT.cur.parts.push(arr); ATT.cur.bytes += arr.length;
+        return J({ ok: true, n: ATT.items.length + 1, bytes: ATT.cur.bytes });
       } catch (e) {
         return J({ ok: false, reason: "chunk_json" });
       }
@@ -534,13 +537,11 @@
       try {
         var dt = new DataTransfer();
         for (var k = 0; k < all.length; k++) {
-          var bin = atob(all[k].b64);
-          var arr = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          dt.items.add(new File([arr], all[k].name, { type: all[k].mime }));
+          dt.items.add(new File(all[k].parts, all[k].name, { type: all[k].mime }));
         }
         input.files = dt.files;
         input.dispatchEvent(new Event("change", { bubbles: true }));
+        ATT = { items: [], cur: null }; // release our buffers after the File is created
         return J({ ok: true, wanted: all.length, in_input: input.files ? input.files.length : 0 });
       } catch (e) {
         return J({ ok: false, reason: String(e && e.message || e).slice(0, 120) });

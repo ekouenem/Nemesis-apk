@@ -393,9 +393,11 @@ class MainActivity : Activity() {
         }
     }
     private fun renameSession(id:String, old:String) {
+        if(busy) { toast("Attendez la fin de la tâche avant de renommer."); return }
         sheet("Renommer la discussion") { body, dialog ->
             val input=formField("Nom de la discussion",old); body.addView(input); body.addView(gap(15))
             body.addView(action("Enregistrer",primary,white) {
+                if(busy) { toast("Attendez la fin de la tâche avant de renommer."); return@action }
                 val result=JSONObject(py.callAttr("rename_session",id,input.text.toString()).toString())
                 if(result.optBoolean("ok")) { dialog.dismiss(); openDrawer() } else toast(result.optString("error"))
             })
@@ -408,7 +410,7 @@ class MainActivity : Activity() {
             body.addView(action("Annuler",Color.TRANSPARENT,muted) { dialog.dismiss() })
         }
     }
-    private fun bubble(role:String, text:String, sessionId:String?=null, messageId:Long=0L, durationMs:Long?=null, initialRating:Int=0): View {
+    private fun bubble(role:String, text:String, sessionId:String?=null, messageId:Long=0L, durationMs:Long?=null, initialRating:Int=0, attachmentData:JSONArray?=null): View {
         val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=if(role=="user") Gravity.END else Gravity.START }
         val card=column().apply {
             setPadding(dp(16),dp(13),dp(16),dp(13)); background=shape(if(role=="user") pale else white,20,if(role=="error") Color.rgb(232,187,185) else line)
@@ -416,6 +418,12 @@ class MainActivity : Activity() {
             val msg=label("",15f,if(role=="error") danger else strong).apply { setTextIsSelectable(true); setLineSpacing(dp(3).toFloat(),1f) }
             if(role=="user" || role=="error") msg.text=text else markdown.setMarkdown(msg,text)
             addView(msg)
+            if(role=="user" && attachmentData!=null) {
+                for(i in 0 until attachmentData.length()) {
+                    val item=attachmentData.optJSONObject(i) ?: continue
+                    addView(gap(8)); addView(attachmentCard(item))
+                }
+            }
             if(role=="assistant" && currentMode=="chat" && sessionId!=null && messageId>0L) {
                 val footer=LinearLayout(this@MainActivity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(5),0,0) }
                 fun marker(symbol:String, description:String, click:()->Unit):TextView = label(symbol,15f,muted).apply {
@@ -443,6 +451,10 @@ class MainActivity : Activity() {
                     footer.addView(label("◷  $elapsed",11f,muted).apply { contentDescription="Temps de réponse : $elapsed"; setPadding(dp(5),0,0,0) })
                 }
                 addView(footer)
+            } else if(role=="assistant" && currentMode!="chat" && durationMs!=null) {
+                val seconds=(durationMs+500)/1000
+                val elapsed=if(seconds<60) "${seconds} s" else "${seconds/60} min ${seconds%60} s"
+                addView(label("◷  $elapsed",11f,muted).apply { contentDescription="Durée de la tâche : $elapsed"; setPadding(dp(5),dp(8),0,0) })
             }
         }
         val width = (resources.displayMetrics.widthPixels * if(role=="user") .83 else .90).toInt()
@@ -530,7 +542,7 @@ class MainActivity : Activity() {
         for(i in 0 until messages.length()) {
             val item=messages.getJSONObject(i); val role=item.optString("role"); val text=item.optString("text")
             val duration=if(item.isNull("duration_ms")) null else item.optLong("duration_ms")
-            val view=if(role=="tool") { if(currentMode=="code") toolCard(text) else compactTool(text,currentMode) } else bubble(role,text,id,item.optLong("id"),duration,item.optInt("rating"))
+            val view=if(role=="tool") { if(currentMode=="code") toolCard(text) else compactTool(text,currentMode) } else bubble(role,text,id,item.optLong("id"),duration,item.optInt("rating"),item.optJSONArray("attachments"))
             if(view!=null) { body.addView(view); body.addView(gap(if(role=="tool") 5 else 12)) }
             if (role == "tool") {
                 val tool = try { JSONObject(text) } catch (_:Exception) { null }
@@ -578,12 +590,17 @@ class MainActivity : Activity() {
         scroll.post { if(preservedScrollY!=null) scroll.scrollTo(0,preservedScrollY) else scroll.fullScroll(View.FOCUS_DOWN) }
         val compose=column().apply { setBackgroundColor(canvas); setPadding(dp(16),dp(6),dp(16),dp(10)) }
         if(session.optInt("uncertain")==1 && !busy) {
+            compose.addView(action("Vérifier la page DeepSeek actuelle",pale,primary) {
+                // Do not navigate: a security challenge may be on the live page.
+                startActivity(Intent(this, com.nemap.android.BrowserActivity::class.java))
+            }.apply { contentDescription="Vérifier la page DeepSeek actuelle" })
+            compose.addView(gap(6))
             compose.addView(action("Reprendre la discussion",pale,primary) { recoverChat(id,if(session.isNull("conversation_url")) "" else session.optString("conversation_url", "")) })
             compose.addView(gap(6))
         }
         val pending=attachments[id] ?: mutableListOf()
         if(pending.isNotEmpty()) for(item in pending.toList()) {
-            compose.addView(action("Pièce jointe : ${item.optString("name")}    ×",pale,primary) { attachments[id]?.remove(item); File(item.optString("path")).delete(); showChat(id) }.apply { gravity=Gravity.START or Gravity.CENTER_VERTICAL })
+            compose.addView(attachmentCard(item) { attachments[id]?.remove(item); File(item.optString("path")).delete(); showChat(id) }); compose.addView(gap(6))
         }
         val box=column().apply { background=shape(white,22,line); setPadding(dp(7),dp(4),dp(7),dp(6)); elevation=dp(2).toFloat() }
         val input=EditText(this).apply {
@@ -603,7 +620,7 @@ class MainActivity : Activity() {
                 drafts[id]=""; attachments.remove(id); val json=JSONArray(); list.forEach { json.put(it) }
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken,0)
                 val previewText = if(text.isBlank()) "Analyse les pièces jointes." else text
-                val preview = previewText + (if(list.isEmpty()) "" else "\n\nPièces jointes : " + list.joinToString(", ") { it.optString("name") })
+                val preview = previewText
                 if (JobRunner.start(applicationContext,id,text,json.toString(),preview)) showChat(id)
 
             }
@@ -620,6 +637,60 @@ class MainActivity : Activity() {
         controls.addView(sendTarget,LinearLayout.LayoutParams(dp(48),dp(48))); box.addView(controls); compose.addView(box)
         compose.addView(label(if(session.optInt("uncertain")==1) "Reprenez la discussion avant d’envoyer ; le dernier message a peut-être été transmis." else "NEMESIS peut se tromper. Vérifiez les informations importantes.",11f,muted).apply { gravity=Gravity.CENTER; setPadding(0,dp(7),0,0) })
         root.addView(compose)
+    }
+    /** Compact attachment cards remain inside the corresponding message bubble. */
+    private fun attachmentCard(item:JSONObject, remove:(()->Unit)?=null):View {
+        val name=item.optString("name","Pièce jointe")
+        val mime=item.optString("mime","")
+        val file=try { File(item.optString("path")).canonicalFile } catch(_:Exception) { null }
+        val base=File(filesDir,"attachments").canonicalFile
+        val safe=file!=null && file.path.startsWith(base.path+File.separator) && file.isFile
+        val row=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL
+            setPadding(dp(6),dp(6),dp(8),dp(6)); background=shape(white,12,line)
+            contentDescription="Pièce jointe : $name"
+        }
+        val thumb=ImageView(this).apply {
+            scaleType=ImageView.ScaleType.CENTER_CROP; clipToOutline=true
+            contentDescription="Aperçu de $name"
+        }
+        val box=FrameLayout(this).apply { background=shape(pale,8); clipToOutline=true }
+        box.addView(label(if(mime=="application/pdf" || name.endsWith(".pdf",true)) "PDF" else "▤",12f,primary,true).apply { gravity=Gravity.CENTER },FrameLayout.LayoutParams(-1,-1))
+        box.addView(thumb,FrameLayout.LayoutParams(-1,-1))
+        row.addView(box,LinearLayout.LayoutParams(dp(54),dp(54)))
+        val text=column().apply { setPadding(dp(10),0,dp(4),0)
+            addView(label(name,13f,strong,true).apply { maxLines=2; ellipsize=android.text.TextUtils.TruncateAt.END })
+            val size=item.optLong("size",if(safe) file!!.length() else 0)
+            val info=if(!safe) "Fichier indisponible" else if(size>=1024*1024) String.format(java.util.Locale.FRANCE,"%.1f Mo",size/1048576.0) else "${maxOf(1,size/1024)} Ko"
+            addView(label(info,11f,muted))
+        }
+        row.addView(text,LinearLayout.LayoutParams(0,-2,1f))
+        if(remove!=null) row.addView(action("×",Color.TRANSPARENT,muted) { remove() }.apply { contentDescription="Retirer $name" },LinearLayout.LayoutParams(dp(40),dp(40)))
+        if(safe && (mime.startsWith("image/") || mime=="application/pdf" || name.endsWith(".pdf",true))) {
+            Thread {
+                val bitmap=try {
+                    if(mime=="application/pdf" || name.endsWith(".pdf",true)) {
+                        android.os.ParcelFileDescriptor.open(file,android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                            android.graphics.pdf.PdfRenderer(fd).use { pdf ->
+                                if(pdf.pageCount==0) null else pdf.openPage(0).use { page ->
+                                    val w=200; val h=(w.toFloat()*page.height/page.width).toInt().coerceIn(1,300)
+                                    android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888).also { bmp ->
+                                        bmp.eraseColor(Color.WHITE); page.render(bmp,null,null,android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val opts=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                        android.graphics.BitmapFactory.decodeFile(file!!.path,opts)
+                        opts.inSampleSize=maxOf(1,maxOf(opts.outWidth,opts.outHeight)/200); opts.inJustDecodeBounds=false
+                        android.graphics.BitmapFactory.decodeFile(file.path,opts)
+                    }
+                } catch(_:Exception) { null }
+                if(bitmap!=null) thumb.post { if(thumb.isAttachedToWindow) thumb.setImageBitmap(bitmap) else bitmap.recycle() }
+            }.start()
+        }
+        return row
     }
     private fun attachmentMenu(id:String) {
         if((attachments[id]?.size ?: 0)>=4) { toast("Maximum 4 pièces jointes."); return }
@@ -728,19 +799,38 @@ class MainActivity : Activity() {
         }
         if(request==302 && result==RESULT_OK && uri!=null) {
             val id=pickerSession ?: return
-            try {
-                var name="Pièce jointe"; contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) name=it.getString(0) ?: name }
-                var mime=contentResolver.getType(uri) ?: ""
-                if(mime=="application/octet-stream" && name.endsWith(".txt",true)) mime="text/plain"
-                if(mime.isBlank()) mime="application/octet-stream"
-                val dir=File(filesDir,"attachments").apply { mkdirs() }; val target=File(dir,UUID.randomUUID().toString())
-                try { contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output ->
-                    val buffer=ByteArray(8192); var total=0L
-                    while(true) { val n=input.read(buffer); if(n<0) break; total+=n; if(total>8L*1024*1024) throw IllegalArgumentException("Fichier trop volumineux."); output.write(buffer,0,n) }
-                } } ?: throw IllegalArgumentException("Fichier illisible") } catch(e:Exception) { target.delete(); throw e }
-                attachments.getOrPut(id){mutableListOf()}.add(JSONObject().put("name",name).put("mime",mime).put("path",target.absolutePath))
-                if(screen=="chat" && currentSession==id) showChat(id)
-            } catch(e:Exception) { toast(e.message ?: "Impossible d’ajouter le fichier") }
+            pickerSession=null
+            // Copy off the UI thread: a 50 MiB document must not freeze Android.
+            Thread {
+                var target:File?=null
+                try {
+                    var name="Pièce jointe"; contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) name=it.getString(0) ?: name }
+                    var mime=contentResolver.getType(uri) ?: ""
+                    if(name.endsWith(".pdf",true)) mime="application/pdf"
+                    if(mime=="application/octet-stream" && name.endsWith(".txt",true)) mime="text/plain"
+                    if(mime.isBlank()) mime="application/octet-stream"
+                    val limit=(if(mime=="application/pdf") 50L else 20L)*1024*1024
+                    val dir=File(filesDir,"attachments").apply { mkdirs() }; target=File(dir,UUID.randomUUID().toString())
+                    contentResolver.openInputStream(uri)?.use { input -> target!!.outputStream().use { output ->
+                        val buffer=ByteArray(65536); var total=0L
+                        while(true) { val n=input.read(buffer); if(n<0) break; total+=n; if(total>limit) throw IllegalArgumentException("Fichier trop volumineux (maximum ${limit/1024/1024} Mo)."); output.write(buffer,0,n) }
+                        if(total==0L) throw IllegalArgumentException("Fichier vide.")
+                    } } ?: throw IllegalArgumentException("Fichier illisible")
+                    val prepared=target!!; val item=JSONObject().put("name",name).put("mime",mime).put("path",prepared.absolutePath).put("size",prepared.length())
+                    runOnUiThread {
+                        val existing=attachments[id] ?: mutableListOf()
+                        val total=existing.sumOf { it.optLong("size",File(it.optString("path")).length()) }+prepared.length()
+                        if(isFinishing || isDestroyed || existing.size>=4 || total>64L*1024*1024) {
+                            prepared.delete(); if(!isFinishing && !isDestroyed) toast("Maximum 4 fichiers et 64 Mo au total.")
+                        } else {
+                            attachments.getOrPut(id){mutableListOf()}.add(item)
+                            if(screen=="chat" && currentSession==id) showChat(id)
+                        }
+                    }
+                } catch(e:Exception) {
+                    target?.delete(); runOnUiThread { if(!isFinishing && !isDestroyed) toast(e.message ?: "Impossible d’ajouter le fichier") }
+                }
+            }.start()
         }
         pickerSession=null
     }

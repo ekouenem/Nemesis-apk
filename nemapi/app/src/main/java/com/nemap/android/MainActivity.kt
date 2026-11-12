@@ -284,7 +284,9 @@ class MainActivity : Activity() {
         prov.addView(Ui.kv(this, "page", "—").also { vPage = it.getChildAt(1) as TextView })
         prov.addView(Ui.spaceTop(this, dp(this, 12f)))
         prov.addView(Ui.button(this, "Ouvrir le navigateur DeepSeek", primary = true) {
-            openBrowser("https://chat.deepseek.com/")
+            // Show the existing WebView and any security prompt. Do not silently
+            // navigate home and erase a challenge or an in-progress conversation.
+            openBrowser()
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         page.addView(prov)
 

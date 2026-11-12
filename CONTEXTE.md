@@ -1,14 +1,13 @@
 # Contexte de reprise — NEMESIS Android
 
-État arrêté au 11 novembre 2026. Ce document est un instantané : vérifier Git, la release et l’environnement avant toute intervention. Il ne contient aucun identifiant, jeton, cookie ni clé privée.
+État mis à jour le 11 novembre 2026. Ce document est un instantané : vérifier Git, la release et l’environnement avant toute intervention. Il ne contient aucun identifiant, jeton, cookie ni clé privée.
 
-## Point d’arrêt demandé
+## Version de référence
 
-L’utilisateur souhaite rester sur **v0.1.0-beta.4**, documenter l’état puis arrêter cette session. Ne pas publier de nouvelle APK ni modifier la version sans nouvelle demande. Les documents de reprise ne changent pas le binaire beta.4.
+La présente itération vise la préversion **v0.1.0-beta.5**, succédant à beta.4, et ne modifie pas le tag beta.4. Vérifier le tag et les notes GitHub pour le commit exact et le SHA-256 de l’APK publiée. `versionCode 6`, `versionName 0.1.0-beta.5`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`.
 
 - Dépôt de travail : `ekouenem/Nemesis-apk`, branche `main` ; ne rien pousser dans le dépôt NemApi-Apk d’origine.
-- Commit du code beta.4 : `d5e9a1c42b1b8fe48e2519bc7b51136ecd21d01d` ; tag et [prérelease](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.4) publiés. Un éventuel commit de documentation postérieur ne modifie pas ce tag ni son APK.
-- APK : [NEMESIS-v0.1.0-beta.4.apk](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.4/NEMESIS-v0.1.0-beta.4.apk), SHA-256 `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347` ; même signature que beta.3. `versionCode 5`, `versionName 0.1.0-beta.4`, `minSdk 26`, `armeabi-v7a` et `x86`.
+- Beta.4 : commit `d5e9a1c42b1b8fe48e2519bc7b51136ecd21d01d`, SHA APK `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce` ; sa release reste inchangée.
 - Codespace utilisé : `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, `/workspaces/Nemesis-apk`, 2 cœurs, 8 Go ; SDK `/workspaces/android-sdk`, JDK 21 `/usr/local/sdkman/candidates/java/21.0.13.0+2-ms`. Vérifier son existence et l’accès : le Codespace peut être arrêté ou supprimé.
 
 ## Architecture réelle
@@ -16,6 +15,15 @@ L’utilisateur souhaite rester sur **v0.1.0-beta.4**, documenter l’état puis
 Une APK Android native intègre NemApi et l’adaptation Python 3.11 / Chaquopy de NEMESIS-AGENT ; le provider, pas le modèle, est local. Le fournisseur est DeepSeek via WebView. L’ancien plan de documentation Kotlin/Koog, interface WebView générale et exécuteurs Termux/cloud ne décrit pas l’implémentation livrée. L’interface de NEMESIS est native ; la WebView sert au fournisseur. La boucle Python d’origine est adaptée progressivement, pas entièrement portée.
 
 Entrées importantes : `app/src/main/java/com/nemesis/apk/MainActivity.kt` (interface), `JobRunner.kt`, `NemesisService.kt`, `RuntimeRecoveryJob.kt`, `SshBridge.kt`, ponts MCP ; `app/src/main/python/mobile_agent.py`, `providers/nemapi_v3.py`, `action_parser.py`, `mcp_client.py`, `skill_store.py` ; `nemapi/app/src/main/java/com/nemap/android/api/NemesisSession.kt`, `ApiServer.kt`, `core/DeepSeek.kt`, `web/Engine.kt`, `web/WebViewHost.kt` et `nemapi/app/src/main/assets/js/adapter-deepseek.js`. Parcourir le code avant de modifier ces composants.
+
+## Changements beta.5
+
+- Recherche locale à l’agent : Wikipédia fr et Bing, DuckDuckGo en repli ; le blocage anti-robot n’est pas contourné et les résultats peuvent être incomplets. Test Web réel effectué sur Codespace et Android x86.
+- `read_file` local en Work et Code : texte, extraction simple DOCX/PPTX/XLSX, images JPEG/PNG/WebP et PDF transmis au provider. Audio/vidéo non analysés ; respect des limites et de l’acceptation de DeepSeek. Une tâche Work réelle a identifié les nombres d’une image et d’un PDF de test.
+- Work/Code : durée totale au dernier message uniquement, sans votes ; outils locaux sans SSH. Avec permission, `Nemesis/Skills`, `Nemesis/Work/<titre>` et `Nemesis/Code/<titre>`, collisions distinguées et migration journalisée des anciens dossiers UUID sans écrasement. Les dossiers directement vides créés automatiquement peuvent être supprimés. En l’absence de permission, l’ancien repli privé commun demeure.
+- Pièces jointes intégrées aux bulles et vignettes image/PDF, nouveau logo source dans `app/src/main/res/drawable-nodpi/`. PDF 50 Mo, autres fichiers 20 Mo, 64 Mo total, quatre pièces. Chemins locaux privés validés côté API et données transmises à la WebView en morceaux. 50 Mo ont été testés localement dans une WebView Android et en JavaScript sans envoi au fournisseur ; ne pas prétendre qu’un PDF réel de 50 Mo a été accepté par DeepSeek.
+- `CHALLENGE_REQUIRED` est un refus du fournisseur, pas nécessairement une déconnexion. Défaut identifié : l’ancien bouton du navigateur rechargeait l’accueil, pouvant faire disparaître la page/boîte de vérification. Il ouvre désormais la page courante, et un bouton de vérification est disponible sur une session incertaine. Brève attente d’une éventuelle réaction de la page, sans renvoi automatique. Un refus réel ou invisible peut persister : sa disparition générale n’est pas démontrée.
+- Validation : 53 tests Python, JavaScript et unitaires NemApi ; neuf tests Android 8.1 x86, dont transfert local 50 Mo et aperçu. Les tests réels multimodaux ont été limités. ARM 32 bits et continuation longue non validés.
 
 ## État fonctionnel et limites
 

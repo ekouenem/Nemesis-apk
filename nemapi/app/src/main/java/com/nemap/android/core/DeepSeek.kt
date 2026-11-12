@@ -5,7 +5,10 @@ import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 /** Une pièce jointe multimodale (image ou fichier, décodé depuis base64 ou HTTP). */
-class ImagePart(val mime: String, val name: String, val bytes: ByteArray)
+class ImagePart(val mime: String, val name: String, val bytes: ByteArray, val localFile: java.io.File? = null) {
+    fun length(): Long = localFile?.length() ?: bytes.size.toLong()
+    fun open(): java.io.InputStream = localFile?.inputStream() ?: java.io.ByteArrayInputStream(bytes)
+}
 
 data class Msg(
     val role: String,
@@ -200,26 +203,32 @@ object DeepSeek {
      */
     private suspend fun attachImages(images: List<ImagePart>, shouldCancel: () -> Boolean) {
         Engine.adapter("attachBegin")
+        try {
         var sent = 0
         for (img in images) {
-            val b64 = android.util.Base64.encodeToString(img.bytes, android.util.Base64.NO_WRAP)
-            var off = 0
-            while (off < b64.length) {
-                if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
-                val end = minOf(off + CHUNK, b64.length)
-                val payload = JSONObject()
-                    .put("mime", img.mime)
-                    .put("name", img.name)
-                    .put("first", off == 0)
-                    .put("b64", b64.substring(off, end))
-                    .toString()
-                // `first` distingue une nouvelle image du morceau suivant
-                val r = Engine.adapter("attachChunk", payload, 30_000)
-                if (!r.optBoolean("ok")) throw NemApiException(
-                    NemApiException.PROVIDER_NOT_CONFIGURED,
-                    "Transfert de la pièce jointe interrompu (${r.optString("reason")})."
-                )
-                off = end
+            // Stream a fixed amount at a time; never base64 a 50 MiB PDF into
+            // a second full-sized String on the Android heap. Non-final chunks
+            // are a multiple of three, so each is independently decodable.
+            val buf=ByteArray(72_000)
+            var first=true
+            img.open().use { input ->
+                while (true) {
+                    if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
+                    var count=0
+                    while (count<buf.size) {
+                        val n=input.read(buf,count,buf.size-count)
+                        if (n<0) break
+                        if (n==0) continue
+                        count+=n
+                    }
+                    if (count==0) break
+                    val payload=JSONObject().put("mime",img.mime).put("name",img.name).put("first",first)
+                        .put("b64",android.util.Base64.encodeToString(buf,0,count,android.util.Base64.NO_WRAP)).toString()
+                    val r=Engine.adapter("attachChunk",payload,30_000)
+                    if (!r.optBoolean("ok")) throw NemApiException(NemApiException.PROVIDER_NOT_CONFIGURED,
+                        "Transfert de la pièce jointe interrompu (${r.optString("reason")}).")
+                    first=false
+                }
             }
             sent++
         }
@@ -242,6 +251,11 @@ object DeepSeek {
         )
 
         waitUpload(shouldCancel)
+        } catch (failure:Throwable) {
+            // Release any partially accumulated WebView buffers on error/cancel.
+            try { Engine.adapter("attachBegin") } catch (_:Throwable) {}
+            throw failure
+        }
     }
 
     /**
@@ -394,6 +408,7 @@ object DeepSeek {
         var lastContinueCheck = 0L
         var emptyStreamEndedAt = 0L
         var lastProgressAt = t0
+        val challengeGrace = ChallengeGrace()
         fun freshText(a: JSONObject): String {
             return DomFreshness.freshText(a.optBoolean("ok"),a.optString("text", ""),a.optInt("blocks",0),
                 baseline.optString("text", ""),baseline.optInt("blocks",0),continuation)
@@ -430,6 +445,17 @@ object DeepSeek {
                                 "DeepSeek a interrompu une réponse en cours ; elle peut être incomplète.")
                         }
                         if (err.isNotEmpty() && acc.isEmpty()) {
+                            // The page may itself finish handling the challenge or start
+                            // a new request immediately after this business error. Wait
+                            // briefly for that native page behaviour; never resend here.
+                            if (err == "security_challenge") {
+                                if (challengeGrace.shouldWait(st.optLong("id", -1L), now)) {
+                                    val dom = freshText(Engine.adapter("answer"))
+                                    if (dom.isNotEmpty()) { onDelta(dom); acc=dom; break }
+                                    delay(POLL_MS)
+                                    continue
+                                }
+                            }
                             val domAnswer = Engine.adapter("answer")
                             val fromDom = freshText(domAnswer)
                             if (fromDom.isNotEmpty()) {

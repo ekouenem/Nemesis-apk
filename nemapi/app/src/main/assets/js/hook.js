@@ -176,9 +176,10 @@
     // DeepSeek may return HTTP 200 with a business-level failure instead of
     // SSE. Do not misreport an explicit security challenge as an empty answer.
     if (j && j.code != null && Number(j.code) !== 0 && String(j.code).trim() !== "") {
-      rec.error = "upstream_error";
-      rec.errorMessage = String(j.msg || "") === "CHALLENGE_REQUIRED" || Number(j.code) === 40303
-        ? "DeepSeek demande une vérification de sécurité. Ouvrez DeepSeek dans NEMESIS pour la terminer."
+      var challenged = String(j.msg || "") === "CHALLENGE_REQUIRED" || Number(j.code) === 40303;
+      rec.error = challenged ? "security_challenge" : "upstream_error";
+      rec.errorMessage = challenged
+        ? "DeepSeek a refusé la requête pour une vérification de sécurité, qui peut ne pas être affichée immédiatement. Ouvrez la conversation dans NemApi ; si rien n’apparaît, attendez avant de réessayer. Vérifiez le dernier message avant toute reprise."
         : "DeepSeek a refusé la requête (code " + String(j.code).slice(0,20) + ").";
       rec.done = true;
       return;

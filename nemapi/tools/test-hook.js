@@ -144,7 +144,7 @@ data: {"p":"response/fragments/-1/content","o":"APPEND","v":" la réponse"}
   challenged.emit('progress');
   challenged.emit('loadend');
   const challenge = JSON.parse(nap.state());
-  check('challenge de sécurité détecté', challenge.error, 'upstream_error');
+  check('challenge de sécurité détecté', challenge.error, 'security_challenge');
   check('message de vérification explicite', challenge.errorMessage.includes('vérification de sécurité'), true);
 
   // une route qui ne doit PAS être capturée
