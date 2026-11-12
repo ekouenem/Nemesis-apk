@@ -58,6 +58,9 @@ object Engine {
             }
             main.postDelayed(timer, timeoutMs)
             main.post {
+                // A timed-out or cancelled call which has not yet reached the
+                // WebView must not execute later (especially a submit action).
+                if (done.get() || !cont.isActive) return@post
                 try {
                     wv.evaluateJavascript(js) { value ->
                         if (done.compareAndSet(false, true) && cont.isActive) {
@@ -147,9 +150,33 @@ object Engine {
 
     suspend fun currentUrl(): String = evalJs("location.href", 5_000) ?: ""
 
-    /** État du flux observé par le hook réseau. */
-    suspend fun streamState(): JSONObject =
-        evalJson("window.__nap ? window.__nap.state() : JSON.stringify({started:false})")
+    /** Retry ONLY idempotent observation, never a submit, tap, upload or edit. */
+    private suspend fun <T> readWithRecovery(onWait: () -> Unit, read: suspend () -> T): T {
+        var attempt = 0
+        while (true) {
+            try { return read() }
+            catch (e: NemApiException) {
+                if (e.code != NemApiException.TIMEOUT || ++attempt >= 3) throw e
+                NemLog.w("dom", "Lecture WebView momentanément lente : nouvelle observation sans nouvel envoi")
+                try { onWait() } catch (_: Exception) {}
+                kotlinx.coroutines.delay(350L * attempt)
+            }
+        }
+    }
+
+    /** Restricted to observation methods; deliberately cannot submit or tap. */
+    suspend fun readAdapter(method: String, timeoutMs: Long = 8_000, onWait: () -> Unit = {}): JSONObject {
+        require(method in setOf("answer", "generating", "continueAvailable")) { "Méthode DOM non autorisée pour une nouvelle lecture" }
+        return readWithRecovery(onWait) { adapter(method, timeoutMs = timeoutMs) }
+    }
+
+    /** Read only the not-yet-consumed portion of the current hook stream. */
+    suspend fun streamState(offset: Int = 0, onWait: () -> Unit = {}): JSONObject {
+        require(offset >= 0)
+        return readWithRecovery(onWait) {
+            evalJson("window.__nap ? window.__nap.state($offset) : JSON.stringify({started:false})", 8_000)
+        }
+    }
 
     /**
      * Suivi des téléversements de pièces jointes, vus depuis le réseau

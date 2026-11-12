@@ -242,6 +242,75 @@ class MobileTests(unittest.TestCase):
         self.assertTrue(chunks[-2]); self.assertGreater(len(chunks[-1]),len(chunks[-2]))
         self.assertIn('deuxième partie',result.json()['choices'][0]['message']['content'])
 
+    def test_interrupted_stream_preserves_partial_and_does_not_resend(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
+        events=[{'choices':[{'delta':{'content':'Voici une réponse partielle.\n```python\nx=1'}}]}, {'error':{'message':'Le moteur DOM ne répond pas'}}]
+        response.iter_lines.return_value=['data: '+json.dumps(e) for e in events]
+        with patch.object(provider._session,'post',return_value=response) as post, patch.object(m,'SessionProvider',return_value=provider):
+            result=json.loads(m.send(sid,'Fais un fichier'))
+        self.assertFalse(result['ok']); self.assertEqual(post.call_count,1)
+        state=json.loads(m.get_session(sid)); self.assertEqual(state['uncertain'],1)
+        self.assertEqual([x['role'] for x in state['messages']],['user','assistant','error'])
+        self.assertIn('Réponse interrompue',state['messages'][1]['text'])
+        self.assertIn('```python\nx=1',state['messages'][1]['text'])
+        self.assertIn('moteur DOM',state['messages'][2]['text'])
+
+    def test_failed_stream_without_content_does_not_create_partial_message(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
+        response.iter_lines.return_value=['data: '+json.dumps({'error':{'message':'Échec'}})]
+        with patch.object(provider._session,'post',return_value=response), patch.object(m,'SessionProvider',return_value=provider):
+            self.assertFalse(json.loads(m.send(sid,'Question'))['ok'])
+        self.assertEqual([x['role'] for x in json.loads(m.get_session(sid))['messages']],['user','error'])
+
+    def test_message_revision_tracks_insert_update_delete_and_survives_reconfigure(self):
+        sid=json.loads(m.create_session('work'))['id']
+        initial=m.message_revision(sid); self.assertEqual(initial,0)
+        m._message(sid,'tool','pending')
+        self.assertGreater(m.message_revision(sid),initial)
+        before=m.message_revision(sid)
+        with m._db() as db: db.execute("UPDATE messages SET text='finished' WHERE session_id=?",(sid,))
+        self.assertGreater(m.message_revision(sid),before)
+        snap=json.loads(m.get_session(sid)); self.assertEqual(snap['messages_revision'],m.message_revision(sid))
+        before=m.message_revision(sid); m.configure(self.temp.name)
+        self.assertGreaterEqual(m.message_revision(sid),before)
+        before=m.message_revision(sid)
+        with m._db() as db: db.execute('DELETE FROM messages WHERE session_id=?',(sid,))
+        self.assertGreater(m.message_revision(sid),before)
+
+    def test_local_http_sse_crosses_agent_and_preserves_stream_and_session(self):
+        # Local synthetic provider: exercises the real requests client, SSE
+        # parser and SQLite state, without contacting DeepSeek or a user account.
+        import threading, time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        url='https://chat.deepseek.com/a/chat/s/testabc123'
+        fragments=['Début 😀 '+('a'*4000), ' seconde partie '+('b'*4000), ' fin '+('c'*4000)]
+        class Handler(BaseHTTPRequestHandler):
+            calls=0
+            def log_message(self,*args): pass
+            def do_POST(self):
+                Handler.calls+=1
+                self.rfile.read(int(self.headers.get('Content-Length','0')))
+                self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.send_header('Connection','close'); self.end_headers()
+                def event(obj): self.wfile.write(('data: '+json.dumps(obj,ensure_ascii=False)+'\n\n').encode()); self.wfile.flush()
+                for f in fragments:
+                    event({'choices':[{'delta':{'content':f}}]}); time.sleep(.22)
+                event({'nemesis_session':{'conversation_url':url,'url_captured':True}})
+                self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush(); self.close_connection=True
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler); thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            m.configure(self.temp.name,server.server_port,'test-secret')
+            sid=json.loads(m.create_session('chat'))['id']; seen=[]; original=m._set_live
+            def observe(session,text):
+                seen.append(text); return original(session,text)
+            with patch.object(m,'_set_live',side_effect=observe): result=json.loads(m.send(sid,'Question locale'))
+            self.assertTrue(result['ok'],result); self.assertEqual(result['text'],''.join(fragments)); self.assertEqual(Handler.calls,1)
+            state=json.loads(m.get_session(sid)); self.assertEqual(state['uncertain'],0); self.assertEqual(state['conversation_url'],url)
+            self.assertEqual(state['messages'][-1]['text'],''.join(fragments)); self.assertTrue(any(len(x)>1000 for x in seen))
+            lengths=[len(x) for x in seen if x]; self.assertEqual(lengths,sorted(lengths))
+        finally: server.shutdown(); server.server_close(); thread.join(5)
+
     def test_stream_without_metadata_marks_session_uncertain(self):
         sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
         response=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None

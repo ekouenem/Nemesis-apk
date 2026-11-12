@@ -101,6 +101,16 @@ data: {"p":"response/fragments/-1/content","o":"APPEND","v":" la réponse"}
   check('sépare THINK de la réponse', JSON.parse(nap.__test(think)).text, 'Voici la réponse');
 }
 
+// An authentication refusal must be explicit and never become an empty response.
+{
+  const { win, FakeXHR } = makeWorld();
+  const x = new FakeXHR(); x.open('POST','/api/v0/chat/completion'); x.send('{}');
+  x.responseText = 'data: {"code":40003,"msg":"INVALID_TOKEN"}\n\n'; x.emit('progress'); x.emit('loadend');
+  const state = JSON.parse(win.__nap.state());
+  check('refus de session DeepSeek identifié', state.error, 'authentication_error');
+  check('indication de vérification et reconnexion', /reconnectez/.test(state.errorMessage), true);
+}
+
 // ---------- 2. câblage XHR ----------
 {
   const { win, FakeXHR } = makeWorld();
@@ -112,11 +122,14 @@ data: {"p":"response/fragments/-1/content","o":"APPEND","v":" la réponse"}
 
   check('le hook voit la requête de chat', JSON.parse(nap.reqs_seen()), ['POST /api/v0/chat/completion']);
   check('une capture est ouverte', JSON.parse(nap.state()).started, true);
+  check('lecture incrémentale vide', JSON.parse(nap.state(0)).textOffset, 0);
   check('aucune erreur interne', nap.errors, []);
 
   // le serveur envoie deux morceaux de flux
   xhr.responseText = 'data: {"v":"Salut"}\n\n';
   xhr.emit('progress');
+  const firstPart = JSON.parse(nap.state(2));
+  check('offset UTF-16 et suffixe du flux', [firstPart.textOffset, firstPart.textLength, firstPart.text], [2, 5, 'lut']);
   xhr.responseText += 'data: {"v":" toi"}\n\n';
   xhr.emit('progress');
   check('texte intermédiaire', JSON.parse(nap.state()).text, 'Salut toi');

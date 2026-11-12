@@ -141,7 +141,7 @@ object DeepSeek {
         if (!readySend) NemLog.w("dom", "contrôle d'envoi inactif après $budget ms → repli Entrée")
 
         // Keep a baseline so DOM fallback cannot return the previous turn as a new answer.
-        val beforeSubmit = Engine.adapter("answer")
+        val beforeSubmit = Engine.readAdapter("answer", onWait = onKeepAlive)
         // 3) envoyer
         // Once the submit call starts its outcome may be unknown even on error.
         onSubmitAttempt()
@@ -172,21 +172,25 @@ object DeepSeek {
     ): String {
         var answer = initial
         var continuationCount = 0
+        var previousGate: ContinueGate? = null
         while (true) {
-            val available = waitContinueButton(shouldCancel, if (answer.length >= 6_000) 8_000L else 2_500L, onKeepAlive)
-            if (!available) break
+            val button = waitContinueButton(shouldCancel, if (answer.length >= 6_000) 8_000L else 2_500L, onKeepAlive, previousGate) ?: break
             if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
-            val beforeContinue = Engine.adapter("answer")
+            val gate = ContinueGate(button.optString("id", ""))
+            val beforeContinue = Engine.readAdapter("answer", onWait = onKeepAlive)
             Engine.resetStream()
             val target = Engine.adapter("continueTarget")
             if (!target.optBoolean("ok")) throw NemApiException(NemApiException.SELECTOR_MISSING, "Le bouton de continuation n'est plus disponible ; réponse incomplète.")
+            if (button.optString("id", "").isNotEmpty() && target.optString("id", "") != button.optString("id", ""))
+                throw NemApiException(NemApiException.SELECTOR_MISSING, "Le bouton de continuation a changé ; vérifiez DeepSeek avant de reprendre.")
             val tapped = Engine.tapCssPosition(target.optDouble("x",Double.NaN), target.optDouble("y",Double.NaN), target.optDouble("ratio",1.0))
             if (!tapped) throw NemApiException(NemApiException.SELECTOR_MISSING, "Impossible de poursuivre la génération ; réponse incomplète.")
             continuationCount++
             NemLog.i("dom", "DeepSeek a affiché « Continue » → reprise $continuationCount")
             val tail = ContinuationTail(answer, onDelta)
-            follow("", onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive, baseline = beforeContinue, continuation = true)
+            follow("", onDelta = tail::append, shouldCancel = shouldCancel, onKeepAlive = onKeepAlive, baseline = beforeContinue, continuation = true, continueGate = gate)
             tail.finish()
+            previousGate = gate
             val combined = tail.fullText()
             if (combined.length <= answer.length) throw NemApiException(
                 NemApiException.STREAM_INTERRUPTED, "La continuation n’a produit aucun nouveau texte ; vérifiez DeepSeek avant de reprendre.")
@@ -319,26 +323,33 @@ object DeepSeek {
     private suspend fun waitContinueButton(
         shouldCancel: () -> Boolean,
         timeoutMs: Long,
-        onKeepAlive: () -> Unit
-    ): Boolean {
+        onKeepAlive: () -> Unit,
+        gate: ContinueGate? = null
+    ): JSONObject? {
         val started = System.currentTimeMillis()
         val deadline = started + timeoutMs
         var disabledDeadline = 0L
         var lastKeepAlive = started
+        var oldButtonStillVisible = false
         while (true) {
             val now = System.currentTimeMillis()
             if (now >= deadline && (disabledDeadline == 0L || now >= disabledDeadline)) break
             if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
             try {
-                val status = Engine.adapter("continueAvailable", timeoutMs = 1_500)
-                if (status.optBoolean("available")) {
-                    if (status.optBoolean("enabled", true)) return true
+                val status = Engine.readAdapter("continueAvailable", timeoutMs = 5_000, onWait = onKeepAlive)
+                if (!status.has("available")) throw NemApiException.notReady("Impossible de vérifier le bouton Continue sur la page DeepSeek.")
+                val eligible = gate?.observe(status) ?: (status.optBoolean("available") && status.optBoolean("enabled", true))
+                oldButtonStillVisible = gate?.waitingOnOldButton(status) == true
+                if (eligible) return status
+                if (status.optBoolean("available") && !status.optBoolean("enabled", true)) {
                     if (disabledDeadline == 0L) {
                         disabledDeadline = now + 20_000L
                         NemLog.i("dom", "action « Continue » détectée mais encore désactivée — attente de son activation")
                     }
                 }
-            } catch (_: Throwable) {
+            } catch (e: NemApiException) {
+                // A failed observation is not evidence that Continue is absent.
+                throw e
             }
             if (now - lastKeepAlive >= 2_000L) {
                 try { onKeepAlive() } catch (_: Throwable) {}
@@ -347,7 +358,9 @@ object DeepSeek {
             delay(250)
         }
         if (disabledDeadline != 0L) NemLog.w("dom", "action « Continue » restée désactivée pendant 20 s")
-        return false
+        if (oldButtonStillVisible) throw NemApiException(NemApiException.STREAM_INTERRUPTED,
+            "Le bouton de continuation précédent est encore affiché : vérifiez la page DeepSeek avant de reprendre.")
+        return null
     }
 
     private suspend fun awaitComposer(shouldCancel: () -> Boolean, onKeepAlive: () -> Unit, expectedUrl: String?) {
@@ -396,7 +409,8 @@ object DeepSeek {
         shouldCancel: () -> Boolean,
         onKeepAlive: () -> Unit = {},
         baseline: JSONObject,
-        continuation: Boolean = false
+        continuation: Boolean = false,
+        continueGate: ContinueGate? = null
     ): String {
         val t0 = System.currentTimeMillis()
         var lastKeepAlive = t0
@@ -413,6 +427,16 @@ object DeepSeek {
             return DomFreshness.freshText(a.optBoolean("ok"),a.optString("text", ""),a.optInt("blocks",0),
                 baseline.optString("text", ""),baseline.optInt("blocks",0),continuation)
         }
+        fun consumeHook(st: JSONObject) {
+            val text = st.optString("text", "")
+            if (st.has("textOffset")) {
+                if (st.optInt("textOffset", -1) != acc.length) throw NemApiException(NemApiException.STREAM_INTERRUPTED, "Décalage du flux DeepSeek incohérent ; vérifiez la discussion.")
+                if (text.isNotEmpty()) { onDelta(text); acc += text }
+            } else if (text.length > acc.length) {
+                // Compatibility with an older hook / test adapter.
+                onDelta(text.substring(acc.length)); acc = text
+            }
+        }
 
         while (true) {
             if (isCancelled(shouldCancel)) {
@@ -426,16 +450,12 @@ object DeepSeek {
             }
 
             if (mode == "hook") {
-                val st = Engine.streamState()
+                val st = Engine.streamState(acc.length, onKeepAlive)
                 if (st.optBoolean("started")) {
                     sawStream = true
                     val lastEvent = now - st.optLong("idle", 0).coerceAtLeast(0)
                     if (lastEvent > lastProgressAt) lastProgressAt = lastEvent
-                    val text = st.optString("text", "")
-                    if (text.length > acc.length) {
-                        onDelta(text.substring(acc.length))
-                        acc = text
-                    }
+                    consumeHook(st)
                     if (st.optBoolean("done")) {
                         // JSONObject.optString rend la chaîne "null" pour un JSON null :
                         // on teste la nullité réelle du champ.
@@ -450,13 +470,13 @@ object DeepSeek {
                             // briefly for that native page behaviour; never resend here.
                             if (err == "security_challenge") {
                                 if (challengeGrace.shouldWait(st.optLong("id", -1L), now)) {
-                                    val dom = freshText(Engine.adapter("answer"))
+                                    val dom = freshText(Engine.readAdapter("answer", onWait = onKeepAlive))
                                     if (dom.isNotEmpty()) { onDelta(dom); acc=dom; break }
                                     delay(POLL_MS)
                                     continue
                                 }
                             }
-                            val domAnswer = Engine.adapter("answer")
+                            val domAnswer = Engine.readAdapter("answer", onWait = onKeepAlive)
                             val fromDom = freshText(domAnswer)
                             if (fromDom.isNotEmpty()) {
                                 NemLog.w("hook", "flux en erreur ($err) mais réponse présente dans le DOM → lecture DOM")
@@ -480,7 +500,7 @@ object DeepSeek {
                     }
                     // flux muet mais page redevenue inactive → considéré terminé
                     if (mode == "hook" && now - t0 > FIRST_TOKEN_MS && st.optLong("idle", 0) > STABILITY_MS) {
-                        val gen = Engine.adapter("generating").optBoolean("generating")
+                        val gen = Engine.readAdapter("generating", onWait = onKeepAlive).optBoolean("generating")
                         if (!gen) break
                     }
                 } else if (now - t0 > FIRST_TOKEN_MS) {
@@ -491,7 +511,7 @@ object DeepSeek {
             }
 
             if (mode == "dom") {
-                val a = Engine.adapter("answer")
+                val a = Engine.readAdapter("answer", onWait = onKeepAlive)
                 val txt = freshText(a)
                 if (txt.isNotEmpty() && txt != lastDom) {
                     lastDom = txt
@@ -501,7 +521,7 @@ object DeepSeek {
                         onDelta(txt.substring(acc.length)); acc = txt
                     }
                 }
-                val gen = Engine.adapter("generating").optBoolean("generating")
+                val gen = Engine.readAdapter("generating", onWait = onKeepAlive).optBoolean("generating")
                 if (emptyStreamEndedAt > 0 && lastDom.isEmpty() && now - emptyStreamEndedAt > 30_000L && !gen) break
                 if (!gen && lastDom.isNotEmpty() && now - stableSince > STABILITY_MS) {
                     if (lastDom.length > acc.length) {
@@ -517,17 +537,18 @@ object DeepSeek {
             // the client hanging until its own read timeout.
             if ((sawStream || mode == "dom") && now - lastContinueCheck >= 750L) {
                 lastContinueCheck = now
-                val continuation = try { Engine.adapter("continueAvailable", timeoutMs = 1_000) } catch (_: Throwable) { JSONObject() }
-                if (continuation.optBoolean("available") && continuation.optBoolean("enabled", true)) {
+                val continuationStatus = Engine.readAdapter("continueAvailable", timeoutMs = 5_000, onWait = onKeepAlive)
+                if (!continuationStatus.has("available")) throw NemApiException.notReady("Impossible de vérifier le bouton Continue sur la page DeepSeek.")
+                val eligible = continueGate?.observe(continuationStatus) ?: (continuationStatus.optBoolean("available") && continuationStatus.optBoolean("enabled", true))
+                // A request can be visible to the hook before its first token,
+                // while the *old* Continue button still remains in the DOM.
+                // Never finish an empty stream or tap the same control twice.
+                if (eligible && acc.isNotBlank()) {
                     if (mode == "hook") {
-                        val latest = Engine.streamState()
-                        val latestText = latest.optString("text", "")
-                        if (latestText.length > acc.length) {
-                            onDelta(latestText.substring(acc.length))
-                            acc = latestText
-                        }
+                        val latest = Engine.streamState(acc.length, onKeepAlive)
+                        if (latest.optBoolean("started")) consumeHook(latest)
                     } else {
-                        val latest = Engine.adapter("answer")
+                        val latest = Engine.readAdapter("answer", onWait = onKeepAlive)
                         val latestText = freshText(latest)
                         if (latestText.length > acc.length) {
                             onDelta(latestText.substring(acc.length))
@@ -548,7 +569,7 @@ object DeepSeek {
 
         // fin de flux : si le hook n'a rien donné, on tente le DOM
         if (acc.isBlank()) {
-            val a = Engine.adapter("answer")
+            val a = Engine.readAdapter("answer", onWait = onKeepAlive)
             acc = freshText(a)
             if(acc.isNotBlank()) onDelta(acc)
         }

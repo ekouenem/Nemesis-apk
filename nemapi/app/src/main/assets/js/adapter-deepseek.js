@@ -133,6 +133,12 @@
     return "";
   }
 
+  var continueIds = new WeakMap(), continueIdSeq = 0;
+  function continueId(el) {
+    if (!continueIds.has(el)) continueIds.set(el, "continue-" + (++continueIdSeq));
+    return continueIds.get(el);
+  }
+
   function continueNodes() {
     try {
       return document.querySelectorAll(
@@ -443,7 +449,7 @@
         if (!visible(el)) continue;
         var label = continueLabel(el);
         if (label)
-          return J({ available: true, enabled: !disabled(el), label: label, tag: el.tagName || "" });
+          return J({ available: true, enabled: !disabled(el), label: label, tag: el.tagName || "", id: continueId(el) });
       }
       return J({ available: false, enabled: false });
     },
@@ -458,7 +464,7 @@
         try {
           el.scrollIntoView({block: "center", inline: "center"});
           var r = el.getBoundingClientRect();
-          return J({ok:true, x:r.left+r.width/2, y:r.top+r.height/2, ratio:window.devicePixelRatio || 1});
+          return J({ok:true, x:r.left+r.width/2, y:r.top+r.height/2, ratio:window.devicePixelRatio || 1, id:continueId(el)});
         } catch(e) { return J({ok:false,reason:"continue_target_unavailable"}); }
       }
       return J({ok:false,reason:"continue_missing"});

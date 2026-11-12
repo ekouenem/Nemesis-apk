@@ -540,6 +540,7 @@ class MainActivity : Activity() {
         scroll.post { updateDownButton() }
         root.addView(scrollLayer,LinearLayout.LayoutParams(-1,0,1f))
         val messages=session.optJSONArray("messages") ?: JSONArray()
+        val messageRevision=session.optLong("messages_revision",0)
         if(messages.length()==0) {
             body.addView(gap(55)); body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,14); clipToOutline=true; contentDescription="Logo NEMESIS" }, LinearLayout.LayoutParams(dp(52),dp(52)).apply { gravity=Gravity.CENTER_HORIZONTAL })
             body.addView(gap(12)); body.addView(label("Que souhaitez-vous faire ?",22f,strong,true).apply { gravity=Gravity.CENTER })
@@ -580,8 +581,8 @@ class MainActivity : Activity() {
                         showChat(id,scroll.scrollY); return
                     }
                     status.text="NEMESIS réfléchit" + ".".repeat(((android.os.SystemClock.uptimeMillis()/500)%4).toInt())
-                    val currentMessages = try { JSONObject(py.callAttr("get_session",id).toString()).optJSONArray("messages")?.toString() ?: "[]" } catch (_:Exception) { messages.toString() }
-                    if (currentMessages != messages.toString()) { showChat(id,scroll.scrollY); return }
+                    val currentRevision = try { py.callAttr("message_revision",id).toString().toLong() } catch (_:Exception) { messageRevision }
+                    if (currentRevision != messageRevision) { showChat(id,scroll.scrollY); return }
                     val partial = try { JSONObject(py.callAttr("live_progress",id).toString()).optString("text", "") } catch (_:Exception) { "" }
                     if (partial != last) {
                         last = partial; live.visibility = if(partial.isBlank()) View.GONE else View.VISIBLE
@@ -589,7 +590,8 @@ class MainActivity : Activity() {
                         // Never drag the reader down while new text arrives.
                         live.text=partial
                     }
-                    handler.postDelayed(this,350)
+                    // Reduce expensive Android text re-layout for very long live answers.
+                    handler.postDelayed(this,if (last.length >= 50_000) 1_000L else 350L)
                 }
             }
             live.postDelayed(update,350)

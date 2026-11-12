@@ -10,8 +10,8 @@ android {
         applicationId 'com.nemesis.apk'
         minSdk 26
         targetSdk 28
-        versionCode 7
-        versionName '0.1.0-beta.6'
+        versionCode 8
+        versionName '0.1.0-beta.7'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk { abiFilters 'x86', 'armeabi-v7a' }
     }

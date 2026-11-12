@@ -63,6 +63,7 @@ def configure(files_dir, port=8090, token='', shared_dir=''):
             CREATE TABLE IF NOT EXISTS live_progress (session_id TEXT PRIMARY KEY, text TEXT NOT NULL);''')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(sessions)')}
         if 'pinned' not in columns: db.execute('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+        if 'messages_revision' not in columns: db.execute('ALTER TABLE sessions ADD COLUMN messages_revision INTEGER NOT NULL DEFAULT 0')
         if 'prompt_signature' not in columns: db.execute("ALTER TABLE sessions ADD COLUMN prompt_signature TEXT NOT NULL DEFAULT ''")
         if 'workspace_name' not in columns: db.execute("ALTER TABLE sessions ADD COLUMN workspace_name TEXT NOT NULL DEFAULT ''")
         if 'workspace_pending' not in columns: db.execute("ALTER TABLE sessions ADD COLUMN workspace_pending TEXT NOT NULL DEFAULT ''")
@@ -73,6 +74,14 @@ def configure(files_dir, port=8090, token='', shared_dir=''):
         if 'duration_ms' not in msg_columns: db.execute('ALTER TABLE messages ADD COLUMN duration_ms INTEGER')
         if 'rating' not in msg_columns: db.execute('ALTER TABLE messages ADD COLUMN rating INTEGER NOT NULL DEFAULT 0')
         if 'attachments_json' not in msg_columns: db.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'")
+        # Lightweight revision lets the UI notice tool/message changes without
+        # serializing the entire conversation on the Android main thread 3x/s.
+        db.executescript("""CREATE TRIGGER IF NOT EXISTS message_rev_insert AFTER INSERT ON messages BEGIN
+            UPDATE sessions SET messages_revision=messages_revision+1 WHERE id=NEW.session_id; END;
+            CREATE TRIGGER IF NOT EXISTS message_rev_update AFTER UPDATE ON messages BEGIN
+            UPDATE sessions SET messages_revision=messages_revision+1 WHERE id=NEW.session_id; END;
+            CREATE TRIGGER IF NOT EXISTS message_rev_delete AFTER DELETE ON messages BEGIN
+            UPDATE sessions SET messages_revision=messages_revision+1 WHERE id=OLD.session_id; END;""")
         db.executescript('''CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, content TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL);
@@ -121,7 +130,7 @@ def list_sessions():
 
 def get_session(sid):
     with _db() as db:
-        row = db.execute('SELECT id,title,mode,conversation_url,uncertain,pinned FROM sessions WHERE id=?', (str(sid),)).fetchone()
+        row = db.execute('SELECT id,title,mode,conversation_url,uncertain,pinned,messages_revision FROM sessions WHERE id=?', (str(sid),)).fetchone()
         if row is None: return _data({'ok': False, 'error': 'Discussion introuvable'})
         messages = db.execute('SELECT id,role,text,duration_ms,rating,attachments_json FROM messages WHERE session_id=? ORDER BY id', (str(sid),)).fetchall()
     session = dict(row); session['messages'] = []
@@ -132,6 +141,12 @@ def get_session(sid):
         session['messages'].append(msg)
     session['ok'] = True
     return _data(session)
+
+
+def message_revision(sid):
+    with _db() as db:
+        row = db.execute('SELECT messages_revision FROM sessions WHERE id=?', (str(sid),)).fetchone()
+    return int(row['messages_revision']) if row else -1
 
 
 def rate_message(sid, message_id, rating):
@@ -786,11 +801,14 @@ class SessionProvider(NemapiV3Provider):
                           'nemapi': {'url': 'http://127.0.0.1:%d/v1' % _PORT, 'token': _TOKEN, 'model': 'deepseek-chat', 'agent': 'nemesis', 'timeout': 180}})
         self.sid, self.url = sid, url
         self._prompt_sent = bool(url)
+        self.partial_text = ''
         self.max_retries = 1  # Never silently resend a possibly submitted request.
 
     def _post_cancellable(self, payload, cancel_event):
         payload['nemesis_session'] = {'conversation_url': self.url} if self.url else {'fresh_chat': True}
         payload['stream'] = True
+        self.partial_text = ''
+        text = ''  # Retain received fragments if the stream is interrupted.
         _set_live(self.sid, '')
         # Persist in-flight status before submission; a process death must not
         # silently replay or treat an unconfirmed first turn as a fresh chat.
@@ -848,6 +866,9 @@ class SessionProvider(NemapiV3Provider):
             with _db() as db: db.execute('UPDATE sessions SET uncertain=0 WHERE id=?', (self.sid,))
             raise
         except Exception:
+            # Keep raw received content, including code fences: it is only
+            # displayed as an explicitly incomplete message, never executed.
+            self.partial_text = text
             with _db() as db: db.execute('UPDATE sessions SET uncertain=1 WHERE id=?', (self.sid,))
             raise
 
@@ -960,6 +981,9 @@ def _send(sid, text, attachments_json='[]'):
         prefix = ''
         if not result.get('success'):
             error = str(result.get('error', 'Erreur NemApi'))
+            partial = getattr(provider, 'partial_text', '')
+            if isinstance(partial, str) and partial.strip():
+                _message(sid, 'assistant', 'Réponse interrompue — contenu partiel, à vérifier :\n\n' + partial, duration_ms)
             _message(sid, 'error', error)
             return {'ok': False, 'error': error}
         raw = result.get('response', '')

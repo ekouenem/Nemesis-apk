@@ -177,9 +177,11 @@
     // SSE. Do not misreport an explicit security challenge as an empty answer.
     if (j && j.code != null && Number(j.code) !== 0 && String(j.code).trim() !== "") {
       var challenged = String(j.msg || "") === "CHALLENGE_REQUIRED" || Number(j.code) === 40303;
-      rec.error = challenged ? "security_challenge" : "upstream_error";
+      var authFailed = Number(j.code) === 40003;
+      rec.error = challenged ? "security_challenge" : (authFailed ? "authentication_error" : "upstream_error");
       rec.errorMessage = challenged
         ? "DeepSeek a refusé la requête pour une vérification de sécurité, qui peut ne pas être affichée immédiatement. Ouvrez la conversation dans NemApi ; si rien n’apparaît, attendez avant de réessayer. Vérifiez le dernier message avant toute reprise."
+        : authFailed ? "DeepSeek a refusé la requête (code 40003) : la session peut être expirée. Vérifiez la page DeepSeek et reconnectez-vous si nécessaire avant toute reprise."
         : "DeepSeek a refusé la requête (code " + String(j.code).slice(0,20) + ").";
       rec.done = true;
       return;
@@ -485,13 +487,18 @@
     return JSON.stringify({ ok: true, seq: H.seq });
   };
 
-  H.state = function () {
+  H.state = function (offset) {
     var c = H.cur;
     if (!c) return JSON.stringify({ started: false, seq: H.seq });
+    // Transfer only unread UTF-16 characters across the Android JS bridge.
+    // Legacy callers without an offset still receive the complete text.
+    var from = (typeof offset === "number" && offset >= 0 && isFinite(offset)) ? Math.floor(offset) : 0;
     return JSON.stringify({
       started: true,
       id: c.id,
-      text: c.text,
+      text: c.text.slice(from),
+      textOffset: from,
+      textLength: c.text.length,
       events: c.events,
       done: !!c.done,
       finished: !!c.finished,

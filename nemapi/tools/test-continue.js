@@ -39,6 +39,7 @@ function exercise({ label, attrs = {}, className = "", initiallyDisabled = false
   if (!state.enabled) throw new Error(`enabled continuation control was not recognized: ${label}`);
   const target = JSON.parse(adapter.continueTarget());
   if (!target.ok || target.x !== 54 || target.y !== 36 || target.ratio !== 2) throw new Error('invalid native tap target');
+  if (!target.id || target.id !== state.id || JSON.parse(adapter.continueAvailable()).id !== state.id) throw new Error('continuation identity must stay stable');
   if (!JSON.parse(adapter.continueGeneration()).ok || clicks !== 1) throw new Error(`continuation control was not clicked exactly once: ${label}`);
 }
 
