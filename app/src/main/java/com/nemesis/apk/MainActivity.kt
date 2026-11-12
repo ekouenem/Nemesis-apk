@@ -53,6 +53,12 @@ class MainActivity : Activity() {
     private var selectedFile: String? = null
     private var pickerSession: String? = null
     private lateinit var markdown: Markwon
+    // Python and SQLite may block; never wait for them in the UI stream timer.
+    private val streamReader = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val chatLoader = java.util.concurrent.Executors.newFixedThreadPool(2)
+    private var chatLoadSerial = 0L
+    private var chatLoadingId: String? = null
+    private val historyVisible = mutableMapOf<String,Int>()
     private val py get() = Python.getInstance().getModule("mobile_agent")
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
 
@@ -207,6 +213,8 @@ class MainActivity : Activity() {
         currentSession?.let { if (screen == "chat") showChat(it) }
     }
     override fun onDestroy() {
+        streamReader.shutdownNow()
+        chatLoader.shutdownNow()
         val oldContainer = webHost
         if (oldContainer != null) JobRunner.whenIdle { com.nemap.android.web.WebViewHost.unbindContainer(oldContainer) }
         super.onDestroy()
@@ -423,8 +431,34 @@ class MainActivity : Activity() {
             setPadding(dp(16),dp(13),dp(16),dp(13)); background=shape(if(role=="user") pale else white,20,if(role=="error") Color.rgb(232,187,185) else line)
             addView(label(if(role=="user") "VOUS" else if(role=="error") "ATTENTION" else "NEMESIS",10f,if(role=="error") danger else primary,true)); addView(gap(5))
             val msg=label("",15f,if(role=="error") danger else strong).apply { setTextIsSelectable(true); setLineSpacing(dp(3).toFloat(),1f) }
-            if(role=="user" || role=="error") msg.text=text else markdown.setMarkdown(msg,text)
-            addView(msg)
+            if (text.length <= 8_000) {
+                if(role=="user" || role=="error") msg.text=text else markdown.setMarkdown(msg,text)
+                addView(msg)
+            } else {
+                // Keep the full original message for copy/storage. Rendering a single
+                // huge TextView can block weaker 32-bit devices for many seconds.
+                // Pages are plain text to avoid breaking Markdown fences mid-block.
+                val cuts=mutableListOf(0); var at=0
+                while(at<text.length) {
+                    var end=minOf(at+8_000,text.length)
+                    if(end<text.length && Character.isHighSurrogate(text[end-1]) && Character.isLowSurrogate(text[end])) end--
+                    at=end; cuts.add(at)
+                }
+                var page=0; val info=label("",11f,muted)
+                val navigation=LinearLayout(this@MainActivity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
+                lateinit var previous:TextView; lateinit var next:TextView
+                fun display() {
+                    msg.text=text.substring(cuts[page],cuts[page+1])
+                    info.text="Texte long, affichage brut · partie ${page+1}/${cuts.size-1}"
+                    previous.isEnabled=page>0; previous.alpha=if(previous.isEnabled) 1f else .35f
+                    next.isEnabled=page<cuts.size-2; next.alpha=if(next.isEnabled) 1f else .35f
+                }
+                previous=action("‹ Précédent",pale,primary) { if(page>0) { page--; display() } }.apply { contentDescription="Partie précédente du message" }
+                next=action("Suivant ›",pale,primary) { if(page<cuts.size-2) { page++; display() } }.apply { contentDescription="Partie suivante du message" }
+                addView(info); addView(gap(6)); addView(msg); addView(gap(6))
+                navigation.addView(previous,LinearLayout.LayoutParams(0,-2,1f)); navigation.addView(next,LinearLayout.LayoutParams(0,-2,1f)); addView(navigation)
+                display()
+            }
             if(role=="user" && attachmentData!=null) {
                 for(i in 0 until attachmentData.length()) {
                     val item=attachmentData.optJSONObject(i) ?: continue
@@ -518,8 +552,26 @@ class MainActivity : Activity() {
     }
     private fun showChat(id: String) = showChat(id, null)
     private fun showChat(id: String, preservedScrollY:Int?) {
-        val session=JSONObject(py.callAttr("get_session",id).toString())
-        if(!session.optBoolean("ok")) { showHome(); return }
+        val switched = screen != "chat" || currentSession != id
+        currentSession=id; screen="chat"
+        val ticket=++chatLoadSerial; chatLoadingId=id
+        val count=historyVisible[id] ?: 20
+        if(switched) {
+            frame(); root.addView(topBar("NEMESIS", "Chargement de la discussion…")); root.addView(separator())
+            root.addView(label("Chargement…",14f,muted).apply { gravity=Gravity.CENTER },LinearLayout.LayoutParams(-1,0,1f))
+        }
+        try { chatLoader.execute {
+            val session=try { JSONObject(py.callAttr("get_session",id,count).toString()) }
+                catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message ?: "Chargement impossible") }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || ticket != chatLoadSerial || screen != "chat" || currentSession != id) return@runOnUiThread
+                chatLoadingId=null
+                if(!session.optBoolean("ok")) { toast(session.optString("error","Discussion introuvable")); showHome() }
+                else renderChat(id,preservedScrollY,session)
+            }
+        } } catch (_:java.util.concurrent.RejectedExecutionException) { chatLoadingId=null }
+    }
+    private fun renderChat(id:String, preservedScrollY:Int?, session:JSONObject) {
         currentSession=id; currentMode=session.optString("mode","chat"); screen="chat"; frame()
         root.addView(topBar("NEMESIS",modeName(currentMode)+" · DeepSeek")); root.addView(separator())
         val (scroll,body)=scrollArea(16)
@@ -541,6 +593,12 @@ class MainActivity : Activity() {
         root.addView(scrollLayer,LinearLayout.LayoutParams(-1,0,1f))
         val messages=session.optJSONArray("messages") ?: JSONArray()
         val messageRevision=session.optLong("messages_revision",0)
+        if(session.optBoolean("has_older",false)) {
+            body.addView(action("Afficher les messages précédents",pale,primary) {
+                historyVisible[id]=(historyVisible[id] ?: 20)+20
+                showChat(id,scroll.scrollY)
+            }.apply { contentDescription="Afficher les messages précédents" }); body.addView(gap(12))
+        }
         if(messages.length()==0) {
             body.addView(gap(55)); body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,14); clipToOutline=true; contentDescription="Logo NEMESIS" }, LinearLayout.LayoutParams(dp(52),dp(52)).apply { gravity=Gravity.CENTER_HORIZONTAL })
             body.addView(gap(12)); body.addView(label("Que souhaitez-vous faire ?",22f,strong,true).apply { gravity=Gravity.CENTER })
@@ -573,6 +631,7 @@ class MainActivity : Activity() {
             body.addView(status); body.addView(gap(8)); body.addView(live); body.addView(gap(10))
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
             var last = ""
+            var readInFlight = false
             val update = object : Runnable {
                 override fun run() {
                     if (screen != "chat" || currentSession != id || !live.isAttachedToWindow) return
@@ -581,17 +640,33 @@ class MainActivity : Activity() {
                         showChat(id,scroll.scrollY); return
                     }
                     status.text="NEMESIS réfléchit" + ".".repeat(((android.os.SystemClock.uptimeMillis()/500)%4).toInt())
-                    val currentRevision = try { py.callAttr("message_revision",id).toString().toLong() } catch (_:Exception) { messageRevision }
-                    if (currentRevision != messageRevision) { showChat(id,scroll.scrollY); return }
-                    val partial = try { JSONObject(py.callAttr("live_progress",id).toString()).optString("text", "") } catch (_:Exception) { "" }
-                    if (partial != last) {
-                        last = partial; live.visibility = if(partial.isBlank()) View.GONE else View.VISIBLE
-                        // Render a lightweight text preview during generation; completed answers use Markdown.
-                        // Never drag the reader down while new text arrives.
-                        live.text=partial
+                    if (!readInFlight) {
+                        readInFlight = true
+                        try { streamReader.execute {
+                            val currentRevision = try { py.callAttr("message_revision",id).toString().toLong() } catch (_:Exception) { messageRevision }
+                            val snapshot = try { JSONObject(py.callAttr("live_progress",id,12_000).toString()) } catch (_:Exception) { JSONObject() }
+                            handler.post {
+                                readInFlight = false
+                                if (screen == "chat" && currentSession == id && live.isAttachedToWindow && busy && busySession == id) {
+                                    if (currentRevision != messageRevision) { if(chatLoadingId != id) showChat(id,scroll.scrollY) }
+                                    else {
+                                        val raw = snapshot.optString("text", "")
+                                        // SQLite counts Unicode codepoints, Android measures UTF-16 units.
+                                        var start=(raw.length-12_000).coerceAtLeast(0)
+                                        if(start>0 && start<raw.length && Character.isLowSurrogate(raw[start]) && Character.isHighSurrogate(raw[start-1])) start++
+                                        val partial = if (snapshot.optBoolean("truncated",false) || start>0) "Aperçu de la fin du flux — la réponse complète est conservée.\n\n" + raw.substring(start) else raw
+                                        if (partial != last) {
+                                            last = partial; live.visibility = if(partial.isBlank()) View.GONE else View.VISIBLE
+                                            // A bounded preview avoids re-laying out the entire growing response on every frame.
+                                            // Never drag the reader down while new text arrives.
+                                            live.text=partial
+                                        }
+                                    }
+                                }
+                            }
+                        } } catch (_:java.util.concurrent.RejectedExecutionException) { readInFlight = false }
                     }
-                    // Reduce expensive Android text re-layout for very long live answers.
-                    handler.postDelayed(this,if (last.length >= 50_000) 1_000L else 350L)
+                    handler.postDelayed(this,if (last.length >= 10_000) 1_000L else 350L)
                 }
             }
             live.postDelayed(update,350)

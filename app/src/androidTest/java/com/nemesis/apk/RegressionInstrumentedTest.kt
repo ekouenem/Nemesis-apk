@@ -24,7 +24,7 @@ class RegressionInstrumentedTest {
         val m=Python.getInstance().getModule("mobile_agent"); val ids=mutableListOf<String>()
         val method=MainActivity::class.java.getDeclaredMethod("showChat",String::class.java).apply { isAccessible=true }
         fun create(mode:String):String { val id=JSONObject(m.callAttr("create_session",mode).toString()).getString("id"); ids.add(id);return id }
-        fun show(id:String):List<View> { inst.runOnMainSync { method.invoke(activity,id) };inst.waitForIdleSync();return children(activity.window.decorView) }
+        fun show(id:String):List<View> { inst.runOnMainSync { method.invoke(activity,id) };awaitChat(activity);return children(activity.window.decorView) }
         try {
             val chat=create("chat"); m.callAttr("_message",chat,"tool",JSONObject().put("name","memory_add").put("parameters",JSONObject().put("content","private value")).put("result",JSONObject().put("success",true)).toString())
             var views=show(chat)

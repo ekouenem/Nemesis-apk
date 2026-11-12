@@ -128,12 +128,19 @@ def list_sessions():
     return _data([dict(row) for row in rows])
 
 
-def get_session(sid):
+def get_session(sid, limit=None):
     with _db() as db:
         row = db.execute('SELECT id,title,mode,conversation_url,uncertain,pinned,messages_revision FROM sessions WHERE id=?', (str(sid),)).fetchone()
         if row is None: return _data({'ok': False, 'error': 'Discussion introuvable'})
-        messages = db.execute('SELECT id,role,text,duration_ms,rating,attachments_json FROM messages WHERE session_id=? ORDER BY id', (str(sid),)).fetchall()
-    session = dict(row); session['messages'] = []
+        if limit is None:
+            messages = db.execute('SELECT id,role,text,duration_ms,rating,attachments_json FROM messages WHERE session_id=? ORDER BY id', (str(sid),)).fetchall()
+            has_older = False
+        else:
+            count = max(1, int(limit))
+            recent = db.execute('SELECT id,role,text,duration_ms,rating,attachments_json FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?', (str(sid),count+1)).fetchall()
+            has_older = len(recent) > count
+            messages = list(reversed(recent[:count]))
+    session = dict(row); session['messages'] = []; session['has_older'] = has_older
     for item in messages:
         msg=dict(item)
         try: msg['attachments']=json.loads(msg.pop('attachments_json'))
@@ -888,10 +895,16 @@ def _set_live(sid, text):
         db.execute('INSERT OR REPLACE INTO live_progress(session_id,text) VALUES(?,?)', (sid,text))
 
 
-def live_progress(sid):
+def live_progress(sid, max_chars=None):
+    # Full progress remains available to existing callers. UI requests a bounded
+    # tail so long streams don't repeatedly copy and lay out the whole answer.
     with _db() as db:
-        row = db.execute('SELECT text FROM live_progress WHERE session_id=?', (str(sid),)).fetchone()
-    return _data({'text': row['text'] if row else ''})
+        if max_chars is None:
+            row = db.execute('SELECT text FROM live_progress WHERE session_id=?', (str(sid),)).fetchone()
+            return _data({'text': row['text'] if row else ''})
+        limit = max(1, min(int(max_chars), 100_000))
+        row = db.execute('SELECT substr(text, -?) AS text, length(text) AS total FROM live_progress WHERE session_id=?', (limit,str(sid))).fetchone()
+    return _data({'text': row['text'] if row else '', 'truncated': bool(row and row['total'] > limit)})
 
 
 def _message(sid, role, text, duration_ms=None, attachments=None):

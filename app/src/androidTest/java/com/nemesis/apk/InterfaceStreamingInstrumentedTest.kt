@@ -26,7 +26,7 @@ class InterfaceStreamingInstrumentedTest {
         val busy=JobRunner::class.java.getDeclaredField("busySession").apply { isAccessible=true }
         try {
             repeat(10) { m.callAttr("_message",id,"assistant","Réponse $it "+"texte ".repeat(35),12345) }
-            inst.runOnMainSync { show.invoke(a,id) }; inst.waitForIdleSync()
+            inst.runOnMainSync { show.invoke(a,id) }; awaitChat(a)
             var views=children(a.window.decorView)
             assertTrue(views.any { it.contentDescription=="Temps de réponse : 12 s" })
             val copy=views.first { it.contentDescription=="Copier la réponse" }
@@ -38,13 +38,13 @@ class InterfaceStreamingInstrumentedTest {
             inst.runOnMainSync { good.performClick() }
             assertEquals(1,JSONObject(m.callAttr("get_session",id).toString()).getJSONArray("messages").getJSONObject(0).getInt("rating"))
             busy.set(JobRunner,id)
-            inst.runOnMainSync { show.invoke(a,id) }; inst.waitForIdleSync()
+            inst.runOnMainSync { show.invoke(a,id) }; awaitChat(a)
             var scroll=children(a.window.decorView).filterIsInstance<ScrollView>().first()
             inst.runOnMainSync { scroll.scrollTo(0,0) }; m.callAttr("_set_live",id,"Un flux "+"contenu long ".repeat(300))
             Thread.sleep(1200); inst.waitForIdleSync()
             assertEquals("Streaming must not force the reader down",0,scroll.scrollY)
             m.callAttr("_message",id,"assistant","Nouvelle réponse",1000)
-            Thread.sleep(1200); inst.waitForIdleSync()
+            Thread.sleep(1200); awaitChat(a)
             scroll=children(a.window.decorView).filterIsInstance<ScrollView>().first()
             assertEquals("Rebuilding messages must preserve the reader position",0,scroll.scrollY)
             val down=children(a.window.decorView).first { it.contentDescription=="Aller en bas de la discussion" }

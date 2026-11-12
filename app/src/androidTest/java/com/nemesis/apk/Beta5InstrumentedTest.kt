@@ -23,7 +23,7 @@ class Beta5InstrumentedTest {
     val id=JSONObject(m.callAttr("create_session",mode).toString()).getString("id")
     try {
      m.callAttr("_message",id,"assistant","Terminé",12345)
-     inst.runOnMainSync { show.invoke(a,id) }; inst.waitForIdleSync()
+     inst.runOnMainSync { show.invoke(a,id) }; awaitChat(a)
      val views=children(a.window.decorView)
      assertTrue("Durée absente en $mode",views.any { it.contentDescription=="Durée de la tâche : 12 s" })
      assertFalse(views.any { it.contentDescription=="Bonne réponse" || it.contentDescription=="Mauvaise réponse" })
@@ -66,7 +66,7 @@ class Beta5InstrumentedTest {
    val pythonList=Python.getInstance().getModule("json").callAttr("loads",data.toString())
    m.callAttr("_message",id,"user","Regarde",null,pythonList)
    val show=MainActivity::class.java.getDeclaredMethod("showChat",String::class.java).apply { isAccessible=true }
-   inst.runOnMainSync { show.invoke(a,id) }; inst.waitForIdleSync()
+   inst.runOnMainSync { show.invoke(a,id) }; awaitChat(a)
    val views=children(a.window.decorView)
    val card=views.first { it.contentDescription=="Pièce jointe : photo.png" }
    assertTrue("L’aperçu doit être dans la bulle contenant le message",views.any { it is android.widget.TextView && it.text.toString()=="Regarde" && it.parent === card.parent })

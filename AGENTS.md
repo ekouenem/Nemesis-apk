@@ -1,6 +1,6 @@
 # Consignes de travail — NEMESIS Android
 
-Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.7` (tag applicatif `100831dbc6eee05a9411886bc98bec0433817e2b` ; un commit de documentation peut suivre). Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
+Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.8` ; vérifier le tag et l’état du dépôt avant toute intervention. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
 
 ## Lieu et périmètre
 
@@ -36,3 +36,5 @@ Les gros fichiers utilisent un chemin temporaire privé et des morceaux pour év
 - Bêta.6 : l’action Fermer de la notification stoppe le serveur embarqué et annule le job de récupération ; à la réouverture, l’activité réactive le service. Ne pas compromettre les cookies ni relancer automatiquement le service après fermeture explicite. Le script Termux vit dans le dépôt public distinct `nemesishighschool-cloud/nemesis-termux-ssh` ; son nom de connexion est un alias Termux, pas un compte isolé.
 
 - Bêta.7 : respecter la garde de l’ancien bouton Continue et ne réessayer que les observations DOM, jamais les actions potentiellement soumises. Conserver le texte partiel sans exécuter les outils qu’il contient. Tester les changements avec des fixtures locales, y compris deux continuations et l’ancien bouton persistant.
+
+- Bêta.8 : garder les lectures de session et de progression hors du fil principal, conserver les messages entiers et vérifier l’accès à l’historique et la copie des longs textes. Les longs messages sont paginés en texte brut, le streaming n’affiche qu’un aperçu borné. Les tests Android ARMv7 restent à faire ; une image ARM64 seule ne les remplace pas.

@@ -264,6 +264,21 @@ class MobileTests(unittest.TestCase):
             self.assertFalse(json.loads(m.send(sid,'Question'))['ok'])
         self.assertEqual([x['role'] for x in json.loads(m.get_session(sid))['messages']],['user','error'])
 
+    def test_progress_tail_and_incremental_history_preserve_full_content(self):
+        sid=json.loads(m.create_session('chat'))['id']
+        for i in range(25): m._message(sid,'assistant','message %d' % i)
+        original='début '+('x'*5000)+'😀fin'
+        m._set_live(sid,original)
+        self.assertEqual(json.loads(m.live_progress(sid))['text'],original)
+        tail=json.loads(m.live_progress(sid,100))
+        self.assertTrue(tail['truncated']); self.assertEqual(tail['text'],original[-100:])
+        page=json.loads(m.get_session(sid,20))
+        self.assertTrue(page['has_older']); self.assertEqual(len(page['messages']),20)
+        self.assertEqual(page['messages'][0]['text'],'message 5')
+        all_messages=json.loads(m.get_session(sid,40))
+        self.assertFalse(all_messages['has_older']); self.assertEqual(len(all_messages['messages']),25)
+        self.assertEqual(len(json.loads(m.get_session(sid))['messages']),25)
+
     def test_message_revision_tracks_insert_update_delete_and_survives_reconfigure(self):
         sid=json.loads(m.create_session('work'))['id']
         initial=m.message_revision(sid); self.assertEqual(initial,0)

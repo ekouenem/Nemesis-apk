@@ -4,7 +4,7 @@
 
 ## Version de référence
 
-La préversion publiée la plus récente est **[v0.1.0-beta.7](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.7)**, construite au commit `100831dbc6eee05a9411886bc98bec0433817e2b`. APK publiée, retéléchargée et comparée à l’APK testée : SHA-256 `b7ca53b19ea45bc3dbaed30b202826c43d055c597f4b57ccc45d6dcaaf07d3c3`. `versionCode 8`, `versionName 0.1.0-beta.7`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`, identique à beta.6. Un commit ultérieur de documentation ne modifie pas le tag ni l’APK.
+La préversion de référence est **[v0.1.0-beta.8](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.8)**. SHA-256 de l’APK testée : `07aab456d2cd8cf1820c0ffad358ed0b68242f0f41167575833065be594e6a6f`. `versionCode 9`, `versionName 0.1.0-beta.8`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`, identique à beta.7. Vérifier le tag et la release GitHub : l’APK publiée doit correspondre à celle testée.
 
 - Dépôt de travail : `ekouenem/Nemesis-apk`, branche `main` ; ne rien pousser dans le dépôt NemApi-Apk d’origine.
 - Beta.4 : commit `d5e9a1c42b1b8fe48e2519bc7b51136ecd21d01d`, SHA APK `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce` ; sa release reste inchangée.
@@ -15,6 +15,13 @@ La préversion publiée la plus récente est **[v0.1.0-beta.7](https://github.co
 Une APK Android native intègre NemApi et l’adaptation Python 3.11 / Chaquopy de NEMESIS-AGENT ; le provider, pas le modèle, est local. Le fournisseur est DeepSeek via WebView. L’ancien plan de documentation Kotlin/Koog, interface WebView générale et exécuteurs Termux/cloud ne décrit pas l’implémentation livrée. L’interface de NEMESIS est native ; la WebView sert au fournisseur. La boucle Python d’origine est adaptée progressivement, pas entièrement portée.
 
 Entrées importantes : `app/src/main/java/com/nemesis/apk/MainActivity.kt` (interface), `JobRunner.kt`, `NemesisService.kt`, `RuntimeRecoveryJob.kt`, `SshBridge.kt`, ponts MCP ; `app/src/main/python/mobile_agent.py`, `providers/nemapi_v3.py`, `action_parser.py`, `mcp_client.py`, `skill_store.py` ; `nemapi/app/src/main/java/com/nemap/android/api/NemesisSession.kt`, `ApiServer.kt`, `core/DeepSeek.kt`, `web/Engine.kt`, `web/WebViewHost.kt` et `nemapi/app/src/main/assets/js/adapter-deepseek.js`. Parcourir le code avant de modifier ces composants.
+
+## Changements et vérifications beta.8
+
+- Après une utilisation sur téléphone ARM 32 bits, l’utilisateur a signalé des lenteurs et des messages « ne répond pas », alors que les versions précédentes et son Chromebook x86 n’avaient pas montré ce problème. L’APK beta.7 contenait déjà `armeabi-v7a` et `x86` ; un défaut propre à l’ABI n’est pas démontré.
+- Deux blocages ont été reproduits sur x86 avec des lectures artificiellement retardées : observation pendant le streaming et chargement d’une discussion. En beta.8, ces lectures et le décodage de la session s’effectuent en arrière-plan ; les résultats périmés ne remplacent pas une discussion plus récente. L’aperçu du flux est borné, l’historique se charge par tranches, et les messages de plus de 8 000 unités UTF-16 sont présentés par parties en texte brut, avec conservation et copie du texte complet. Cela change le rendu Markdown des textes volumineux, pas le contenu stocké. Les actions ne sont pas rejouées.
+- 58 tests Python, tests JavaScript, neuf unitaires NemApi, 17 tests Android x86 hors réseau réussis. Réponse synthétique de plus de 100 000 caractères, Unicode, copie complète, ancien historique, navigation concurrente, garde Continue et timeout DOM inclus. Mise à jour beta.7 → beta.8 sur l’émulateur x86 : discussion, URL, état incertain et fichier privé de test conservés. Le test 50 Mio reste synthétique.
+- L’APK unique inclut x86 et ARMv7 32 bits ; les bibliothèques natives et extensions Python de chaque ABI ont été contrôlées en ELF 32 bits et la signature correspond à beta.7. Aucun test du correctif sur le téléphone utilisateur ni sur un émulateur ARMv7 Android 8.1. L’image Android 8.1 ARM64 officielle a démarré sous émulateur ancien sur hôte x86, mais est 64 bits uniquement (`abilist32` vide), donc incapable d’installer l’APK 32 bits. Ne pas présenter cela comme un test ARMv7 réussi. Aucune requête DeepSeek réelle.
 
 ## Changements et vérifications beta.7
 
@@ -64,7 +71,7 @@ Préserver les données de l’émulateur, ne pas utiliser `-wipe-data` et ne pa
 
 1. Vérifier branche, tag, fichiers et état du Codespace ; sauvegarder les données et la clé de signature avant toute opération risquée. Ne pas présumer que des jetons antérieurs existent encore : demander un nouvel accès si nécessaire, sans les enregistrer dans le dépôt.
 2. Demander la priorité à l’utilisateur plutôt que lancer automatiquement une campagne. Si `input_missing` persiste, recueillir les circonstances et diagnostics sans secrets, reproduire prudemment et ne pas supposer une déconnexion.
-3. Priorités possibles à la demande : validation ARM 32 bits ; tests locaux de continuation et d’interruption ; finalisation progressive des outils Code d’origine ; tests supplémentaires des formats de pièces jointes. Une validation réelle DeepSeek exige un nouvel accord explicite et un compte disponible ; ne pas la lancer automatiquement.
+3. Priorités possibles à la demande : recueillir modèle Android et circonstances des ralentissements ; vérifier beta.8 sur appareil ARMv7 réel en préservant les données ; approfondir les tests locaux de continuation et d’interruption ; finaliser progressivement les outils Code. Une validation réelle DeepSeek exige un nouvel accord explicite et un compte disponible ; ne pas la lancer automatiquement.
 4. L’utilisateur indique que ses deux comptes DeepSeek sont bloqués et demande de poursuivre sans autre compte ni requête. Informer régulièrement l’utilisateur et distinguer les tests synthétiques, les tests réels et les limites.
 
 Sujet séparé : le transfert direct du fork `nemesishighschool-cloud/NemApi-Apk` vers `teteekoue` a été refusé ; une copie indépendante `NemApi-Apk-standalone` a été créée et son transfert demandé. L’acceptation n’a pas été confirmée ; vérifier l’état avant toute action supplémentaire.
