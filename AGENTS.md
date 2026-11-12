@@ -1,6 +1,6 @@
 # Consignes de travail — NEMESIS Android
 
-Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.6`. Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
+Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`git status`, branche et fichiers concernés) : le contexte est un instantané et peut devenir obsolète. La dernière version de référence à l’arrêt de cette session est `v0.1.0-beta.7` (tag applicatif `100831dbc6eee05a9411886bc98bec0433817e2b` ; un commit de documentation peut suivre). Ne pas modifier l’APK, publier une nouvelle version ou lancer une nouvelle phase de développement sans demande de l’utilisateur.
 
 ## Lieu et périmètre
 
@@ -27,10 +27,12 @@ Lire d’abord `CONTEXTE.md` et `README.md`, puis inspecter l’état actuel (`g
 ## Validation et livraison
 
 - Adapter les tests au changement. Le README donne les commandes Python, Node et Gradle. Les essais Android bêta ont été réalisés sur émulateur x86 Android 8.1, pas sur ARM ; mentionner distinctement tout nouvel appareil effectivement testé.
-- Éviter les campagnes artificielles de prompts DeepSeek. Les tests réels instrumentés sont opt-in ; comprendre leurs effets, préserver les données et limiter strictement les appels. Ne pas relancer les tests de réponse longue si l’utilisateur ne le souhaite pas.
-- La continuation automatique longue n’est pas validée de bout en bout. La notification du service sur Android 8.1 et l’absence de connexion Google automatique ont des limites de plateforme : ne pas promettre leur résolution sans vérification.
+- L’utilisateur indique que ses deux comptes DeepSeek sont bloqués et demande de continuer sans requête DeepSeek ni nouveau compte. Ne pas lancer de prompt réel, ni même ouvrir ou restaurer automatiquement la page pendant les tests, sans nouvel accord explicite. Les tests instrumentés peuvent ouvrir la WebView : vérifier leurs fixtures et couper le réseau de l’émulateur quand nécessaire tout en conservant les données.
+- La continuation automatique de beta.7 n’est pas validée de bout en bout sur DeepSeek réel après correctif. La notification du service sur Android 8.1 et l’absence de connexion Google automatique ont des limites de plateforme : ne pas promettre leur résolution sans vérification.
 - Quand une release est explicitement demandée, vérifier le statut Git, l’APK, son SHA-256, sa signature, version/minSdk/ABIs, les résultats des tests et les limites. Signaler une APK debug comme telle. Ne jamais inclure la clé de signature ni des données utilisateur dans la publication.
 
 Les gros fichiers utilisent un chemin temporaire privé et des morceaux pour éviter les grandes chaînes base64 : toute modification doit conserver la validation de chemin, les limites et les tests sans publier de données privées. Un retour à l’accueil ne doit pas masquer la page DeepSeek courante lors d’une vérification.
 
 - Bêta.6 : l’action Fermer de la notification stoppe le serveur embarqué et annule le job de récupération ; à la réouverture, l’activité réactive le service. Ne pas compromettre les cookies ni relancer automatiquement le service après fermeture explicite. Le script Termux vit dans le dépôt public distinct `nemesishighschool-cloud/nemesis-termux-ssh` ; son nom de connexion est un alias Termux, pas un compte isolé.
+
+- Bêta.7 : respecter la garde de l’ancien bouton Continue et ne réessayer que les observations DOM, jamais les actions potentiellement soumises. Conserver le texte partiel sans exécuter les outils qu’il contient. Tester les changements avec des fixtures locales, y compris deux continuations et l’ancien bouton persistant.

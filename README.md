@@ -2,14 +2,14 @@
 
 NEMESIS est une application Android native qui réunit, dans une seule APK, une interface de conversation et une adaptation du moteur d’agent Python de NEMESIS-AGENT, reliées à une copie intégrée de NemApi-Apk. Le seul fournisseur intégré actuellement est **DeepSeek** : l’utilisateur doit s’y connecter dans l’application. L’API locale ne rend pas le modèle autonome ni utilisable hors ligne.
 
-> **Préversion : v0.1.0-beta.6.** Elle est utilisable pour les essais, mais les limites ci-dessous restent importantes. L’architecture réelle est native Kotlin + Python/Chaquopy + NemApi/WebView, et non l’architecture Kotlin/Koog décrite dans un ancien plan provisoire.
+> **Préversion : v0.1.0-beta.7.** Elle est utilisable pour les essais, mais les limites ci-dessous restent importantes. L’architecture réelle est native Kotlin + Python/Chaquopy + NemApi/WebView, et non l’architecture Kotlin/Koog décrite dans un ancien plan provisoire.
 
 ## Installation
 
-- [Télécharger l’APK beta.6](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.6/NEMESIS-v0.1.0-beta.6.apk) · [Notes de version](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.6)
+- [Télécharger l’APK beta.7](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.7/NEMESIS-v0.1.0-beta.7.apk) · [Notes de version](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.7)
 - Android minimum déclaré : **8.0 / API 26** ; cible de terrain : Android 8.1. Architectures incluses : `armeabi-v7a` et `x86`, 32 bits. Les essais Android ont été faits sur émulateur **x86 Android 8.1**, pas sur appareil ARM ; la présence d’une ABI n’est pas une validation matérielle.
-- APK **debug**, pas une signature de production. La beta.6 est signée avec la même clé de développement que la beta.5 : l’installation par-dessus devrait préserver les données. Sauvegardez-les au préalable. Si la clé de signature est perdue, une future mise à jour pourra nécessiter une réinstallation et entraîner la perte des données privées.
-- SHA-256 : voir les notes de la release pour l’empreinte du fichier publié.
+- APK **debug**, pas une signature de production. La beta.7 est signée avec la même clé de développement que la beta.6 : l’installation par-dessus devrait préserver les données. Sauvegardez-les au préalable. Si la clé de signature est perdue, une future mise à jour pourra nécessiter une réinstallation et entraîner la perte des données privées.
+- SHA-256 de l’APK publiée : `b7ca53b19ea45bc3dbaed30b202826c43d055c597f4b57ccc45d6dcaaf07d3c3`.
 
 Ouvrez l’application et configurez DeepSeek dans son interface intégrée. La session est conservée dans le stockage privé de la WebView quand Android le permet, mais une reconnexion ou un CAPTCHA peuvent être demandés. La connexion Google automatique du compte Android n’est pas intégrée : OAuth Google interdit l’utilisation d’une WebView embarquée et le navigateur système ne partage pas automatiquement ses cookies avec celle-ci.
 
@@ -30,7 +30,7 @@ Pour utiliser Termux sur le même appareil, consultez le [script public d’inst
 
 Chaque discussion peut reprendre son URL DeepSeek sans renvoyer tout son historique. La beta.4 attend que le composeur soit utilisable, même si la bonne URL est déjà ouverte, et vérifie l’URL au moment de l’envoi. Elle ne rejoue pas automatiquement un message dont la soumission est incertaine ; si nécessaire, vérifiez la conversation et utilisez la reprise explicite. En beta.5, « Vérifier la page DeepSeek actuelle » et le navigateur NemApi ouvrent la WebView existante sans revenir automatiquement à l’accueil : une vérification en cours a ainsi une chance de rester visible. Un vrai refus de sécurité DeepSeek peut néanmoins persister, y compris si aucun challenge n’est affiché ; attendre et vérifier avant toute reprise.
 
-Le champ a été trouvé sur la page connectée stabilisée et une course de préparation a été corrigée. Cela ne prouve pas que tous les cas `input_missing` observés sur d’autres appareils sont résolus. Une modification du site, le réseau ou un challenge peuvent empêcher l’envoi. La continuation automatique des réponses longues a été améliorée mais **n’a pas été validée de bout en bout** : ne considérez pas une réponse ou un script incomplet comme terminé.
+Le champ a été trouvé sur la page connectée stabilisée et une course de préparation a été corrigée. Cela ne prouve pas que tous les cas `input_missing` observés sur d’autres appareils sont résolus. Une modification du site, le réseau ou un challenge peuvent empêcher l’envoi. La beta.7 corrige une course autour du bouton « Continue » et reprend seulement les lectures DOM après un délai temporaire ; elle ne rejoue pas automatiquement les envois ou clics. Si un flux échoue, le texte déjà reçu est conservé comme réponse partielle, sans exécuter les actions qu’il pourrait contenir. La correction a été testée avec un fournisseur simulé local, **pas sur DeepSeek réel après le correctif** : ne considérez pas une réponse ou un script incomplet comme terminé.
 
 NemApi communique avec l’agent via une passerelle HTTP interne sur loopback, port aléatoire et secret en mémoire. Cela réduit l’exposition entre applications mais ne protège pas contre un appareil compromis. Le service de premier plan affiche une notification sur Android 8.1. Android peut interrompre ou différer les tâches malgré les mécanismes de surveillance ; la disponibilité permanente et la reprise après mort du processus ne sont pas garanties.
 
@@ -76,7 +76,9 @@ node nemapi/tools/test-continue.js
 
 Ces chemins Java et SDK sont propres au Codespace documenté : adaptez-les si nécessaire. L’APK est générée dans `app/build/outputs/apk/debug/`. Installer avec `adb install -r` ; **ne pas désinstaller ni effacer les données** pour conserver la session. Les sauvegardes de cookies, clés et sessions sont sensibles et doivent rester hors Git.
 
-Validation beta.5 : 53 tests Python, tests JavaScript et unitaires NemApi ; neuf tests Android 8.1 x86 couvrant notamment la recherche, les durées, la vignette, l’accès à la page courante, la garde de session et le transfert local par morceaux de 50 Mo. Test réel DeepSeek limité : une tâche Work a demandé la lecture d’une petite image et d’un petit PDF locaux et a identifié leur contenu. Le test 50 Mo est local et synthétique, **pas un téléversement réel de 50 Mo vers DeepSeek**. L’acceptation d’un fichier de cette taille et la compatibilité ARM restent à vérifier sur les appareils et le fournisseur. Les tests réels ne doivent pas être relancés en masse.
+Validation beta.7 : 57 tests Python, tests JavaScript, neuf tests unitaires NemApi et 11 scénarios Android hors réseau sur émulateur Android 8.1 x86, incluant deux continuations locales successives, un bouton ancien persistant sans double clic, un délai DOM simulé, l’interface et un transfert WebView local de 50 Mio. L’APK a été installée sur l’émulateur ; l’APK publiée a été retéléchargée et comparée à celle testée. La recherche Web a réussi dans un groupe précédent avec réseau ; elle ne fonctionne naturellement pas hors ligne.
+
+La beta.6 a produit une réponse réelle longue avec trois continuations dans un essai ponctuel avant la correction ; ce succès n’établit pas la fiabilité de la beta.7. Les deux comptes disponibles sont signalés bloqués et **aucune validation DeepSeek réelle après correction n’a été possible**. Aucun test sur appareil ARM physique. Le test 50 Mio est local et synthétique, pas un téléversement réel de cette taille. Une petite image et un petit PDF avaient été analysés lors d’un test réel beta.5. Ne pas relancer de requête ou navigation DeepSeek sans accord de l’utilisateur.
 
 ## Licences et crédits
 
