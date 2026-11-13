@@ -1,14 +1,51 @@
 # Contexte de reprise — NEMESIS Android
 
-État mis à jour le 11 novembre 2026. Ce document est un instantané : vérifier Git, la release et l’environnement avant toute intervention. Il ne contient aucun identifiant, jeton, cookie ni clé privée.
+État au 13 novembre 2026. Ce document décrit la validation beta.9; vérifier Git et la release avant toute action. Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
 
-## Version de référence
+## Préparation de la version beta.9
 
-La préversion de référence est **[v0.1.0-beta.8](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.8)**. SHA-256 de l’APK testée : `07aab456d2cd8cf1820c0ffad358ed0b68242f0f41167575833065be594e6a6f`. `versionCode 9`, `versionName 0.1.0-beta.8`, `minSdk 26`, ABIs `armeabi-v7a` et `x86`. Certificat de signature debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`, identique à beta.7. Vérifier le tag et la release GitHub : l’APK publiée doit correspondre à celle testée.
+- Release beta.9 en préparation; aucun tag/release publié à ce stade. APK candidate locale : `NEMESIS-v0.1.0-beta.9.apk` ; SHA-256 : `f04b43f3539cdd70c6f632b807a4b26922f05b4fdd40e4052436fa60ddec4a94`. Cette candidate est signée avec la clé de développement, non une clé de production.
+- `versionCode 10`, `versionName 0.1.0-beta.9`, `minSdk 26`, quatre ABIs Chaquopy (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). L’APK release est signée avec le même certificat de développement que beta.8 (`ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`) pour les mises à jour par-dessus; ce n’est pas une clé de production.
+- `targetSdk 28` est conservé temporairement pour la compatibilité avec `/sdcard/Nemesis`; la release est un sideload GitHub, **pas une soumission Google Play**. La seule règle lint désactivée est `ExpiredTargetSdkVersion`; une future soumission Play exige migration stockage/target SDK.
+- Dépôt `ekouenem/Nemesis-apk`, branche `main`, Codespace `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, chemin `/workspaces/Nemesis-apk`. Le dépôt NemApi-Apk d’origine ne doit pas être utilisé pour pousser cette application.
 
-- Dépôt de travail : `ekouenem/Nemesis-apk`, branche `main` ; ne rien pousser dans le dépôt NemApi-Apk d’origine.
-- Beta.4 : commit `d5e9a1c42b1b8fe48e2519bc7b51136ecd21d01d`, SHA APK `b5b2b244f07a150e600879060f50c94abf78b00b967211de5d640336b2a437ce` ; sa release reste inchangée.
-- Codespace utilisé : `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, `/workspaces/Nemesis-apk`, 2 cœurs, 8 Go ; SDK `/workspaces/android-sdk`, JDK 21 `/usr/local/sdkman/candidates/java/21.0.13.0+2-ms`. Vérifier son existence et l’accès : le Codespace peut être arrêté ou supprimé.
+## Modifications beta.9
+
+- **Moteur DOM** : minuterie posée au dispatch réel vers WebView; délais croissants pour les seules observations idempotentes; état de santé après trois délais consécutifs; redémarrage manuel qui ne renvoie pas de message. Les actions d’envoi/clic ne sont pas rejouées. WebView reconstruction après perte de renderer conservée.
+- **Shell** : PRoot/Debian entièrement retiré de l’APK, des sources de runtime et des réglages. Bash et SFTP utilisent uniquement SSH configuré; le workspace local Android n’est pas automatiquement monté sur l’hôte distant. Sortie Bash plafonnée à 512 Kio.
+- **Connecteurs expérimentaux** : GitHub PAT nettoyé des espaces accidentels, chiffré Android Keystore, état UI distinguant configuration et accès vérifié; chemin de test `/user`. Google OAuth est natif (pas dans WebView), état de compte distinct d’un test réussi et chemin de test Drive. Lectures Drive limitées à 200 Kio et types texte/Docs/Sheets. Tests synthétiques seulement; aucun accès utilisateur réel n’est validé.
+- **Compatibilité** : ABI x86/ARMv7 précédente élargie aux quatre ABIs Chaquopy. La clé de développement n’a pas été copiée dans Git; seule l’APK asset est publiée.
+
+## Vérifications réellement effectuées
+
+- `PYTHONPATH=app/src/main/python python3 -m unittest discover -s tests -v` : **74/74** tests Python, incluant mocks GitHub/Google, état par discussion, accès API simulé et limites de lecture.
+- Cinq suites JavaScript passent : readiness, DOM adapter, transfert 50 MiB synthétique, hook et continuation.
+- NemApi JVM : **13 tests** passent, dont quatre `DomHealthTest`.
+- Android instrumenté sur AVD existant `nemesis-api27-32bit`, x86, Android 8.1/API 27 : **2 tests DOM**, **4 tests parsing SSH**, **2 tests Android Keystore/connecteur** passent. L’application beta.9 debug a été installée avec `adb install -r`; écran d’accueil/Paramètres sans crash et absence du menu PRoot vérifiées. Aucun wipe ni désinstallation; le même AVD a été redémarré après déplacement temporaire des caches build, données laissées intactes.
+- Build réussi : `:app:assembleDebug`, `:app:assembleDebugAndroidTest`, `:app:assembleRelease`; APK release alignée/signée puis vérifiée par `apksigner`. SHA-1/SHA-256 du certificat identiques à beta.8. `git diff --check` propre avant publication.
+
+## Limites non validées — ne pas présenter comme testées
+
+- **DeepSeek réel** : aucune conversation, connexion ou requête de production lancée; les tests DOM sont synthétiques sur `about:blank`. Pas de validation sur appareil ARM physique. Aucun auto-redémarrage ne garantit la stabilité absolue; après plusieurs timeouts, vérifier la discussion avant reprise.
+- **Google Workspace réel** : aucun compte OAuth relié à l’émulateur et aucune requête API authentifiée. Les deux tests Android vérifient uniquement métadonnées et persistance de compte synthétiques; les API Google `GoogleSignIn`/`GoogleAuthUtil` génèrent des avertissements de dépréciation. Le propriétaire doit activer Drive/Docs/Sheets APIs et enregistrer OAuth Android pour `com.nemesis.apk` + SHA-1 de signature.
+- **GitHub réel** : aucun PAT d’utilisateur configuré dans NEMESIS; test API live non effectué. Le secret Codespace conservé hors dépôt n’a pas été réutilisé comme credential du connecteur.
+- **SSH distant réel** : l’endpoint parser passe; aucun serveur SSH utilisateur connecté lors de cette validation. Le premier usage conserve TOFU sans authentification indépendante de l’empreinte; Codespaces ne sont pas pris en charge par le transport direct par mot de passe.
+- Les tests 50 MiB sont synthétiques; ne prouvent pas une upload réelle de cette taille. Aucun essai utilisateur ARMv7 n’a été fait.
+
+## Publication
+
+L’utilisateur a explicitement autorisé commit, push et nouvelle release beta.9. Publication pas encore effectuée au moment de cette préparation. Après push, créer le tag/release beta.9 et vérifier que l’asset GitHub correspond au SHA-256 ci-dessus. Aucun secret ou keystore ne doit être dans le commit.
+
+## Historique — itération UI noVNC et streaming (antérieure à la validation beta.9)
+
+- Le skill tiers `wshobson/agents`, skill `mobile-android-design`, a été cloné hors dépôt dans `/workspaces/mobile-android-design-skill` (commit `9c61ab2`); `SKILL.md` et `references/details.md` ont été lus. Les recommandations sont adaptées à l’interface Android native existante, sans conversion Compose.
+- `MainActivity.kt` : sélecteur Chat/Work/Code avec Work centré par défaut, navigation par toucher et balayage; le + et la nouvelle discussion du tiroir arrivent au même écran. Le mode actif est maintenant une capsule claire avec texte bleu au premier plan (pas de calque bleu opaque par-dessus le libellé). Icône Workspace dans les fils uniquement en Work/Code. Import Workspace copie le fichier dans le dossier de session (100 Mo max, noms nettoyés/doublons préservés), sans pièce jointe ni envoi automatique.
+- Icône Android du launcher en adaptive icon; les logos dans l’interface ne sont pas changés.
+- Duplication du flux : `SessionProvider` sauvegardait le texte du tour dans `live_progress` alors que `_send` persistait le même texte avant les cartes d’outil; la révision reconstruisait alors bulle Markdown + carte + ancien texte brut. `_send` vide maintenant l’aperçu par requête avant persistance; le texte de streaming restant passe par Markwon. Test de régression simulé `test_live_preview_is_cleared_before_persisted_prose_and_tool`, sans réseau/DeepSeek réel.
+- Validation finale : 69 tests Python, 5 suites JavaScript, build `:app:assembleDebug` réussi; `git diff --check` propre. Aucun build release. Pas de test instrumenté ou vérification écran : aucun appareil ADB n’est présent.
+- noVNC redémarré réellement (x11vnc/websockify/proxy remplacés); port Codespaces 6082 vérifié **private**, HTTP local 200. Ports 5900 et 6080 restent loopback. Lien privé : `https://nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75-6082.app.github.dev/vnc.html?autoconnect=true&resize=scale`.
+- Limite : `nemesis-api27-32bit` avorte au démarrage malgré KVM utilisable. ADB ne trouve aucun émulateur; ne pas déclarer le noVNC comme aperçu Android fonctionnel tant que l’AVD ne démarre pas. L’AVD alternatif n’a pas été modifié (exigeait ~7.4 Go, libres ~2.2 Go). N’effacer aucune image/donnée AVD.
+- APK debug local dans Codespace: `app/build/outputs/apk/debug/app-debug.apk`, SHA-256 `b557e6ce4487493251cda0cba8d156d66b7b6877729bf9f6c205cf3d58712a0a`. Dans cette étape aucun binaire n’a été proposé ou copié. Aucun commit/push/release.
 
 ## Architecture réelle
 

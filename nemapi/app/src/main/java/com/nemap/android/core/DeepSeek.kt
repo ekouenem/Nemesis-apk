@@ -29,6 +29,7 @@ object DeepSeek {
     private const val FIRST_TOKEN_MS = 60_000L
     private const val STABILITY_MS = 2_000L
     private const val POLL_MS = 250L
+    private const val DOM_POLL_MS = 750L
     /** Plafond de sécurité, plus jamais atteint en pratique (voir waitUpload). */
     private const val UPLOAD_MS = 45_000L
     /** Au-delà, on considère que la page garde la pièce jointe en local. */
@@ -368,20 +369,27 @@ object DeepSeek {
         var loginObserved = false
         var differentUrl = false
         var lastKeepAlive = start
+        var lastUrlCheck = start - 1_000L
+        // The page-load callback injects the adapter. Verify/inject it once here,
+        // not twice on every 400 ms polling iteration.
+        try { Engine.ensureAdapter() } catch (_: NemApiException) {}
         while (android.os.SystemClock.elapsedRealtime() - start < 20_000L) {
             if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
             try {
-                differentUrl = expectedUrl != null && Engine.currentUrl().trimEnd('/') != expectedUrl.trimEnd('/')
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (expectedUrl != null && now - lastUrlCheck >= 1_000L) {
+                    lastUrlCheck = now
+                    differentUrl = Engine.currentUrl().trimEnd('/') != expectedUrl.trimEnd('/')
+                }
                 if (!differentUrl) {
-                    Engine.ensureAdapter()
-                    val ready=Engine.adapter("ready", timeoutMs=3_000)
+                    val ready = Engine.adapter("ready", timeoutMs = 5_000)
                     if (ready.optBoolean("ok")) return
                     loginObserved = loginObserved || ready.optBoolean("login_required")
                 }
-            } catch(_: NemApiException) { /* transient DOM/renderer failure before submit */ }
-            val now=android.os.SystemClock.elapsedRealtime()
-            if (now-lastKeepAlive>=5_000L) { try { onKeepAlive() } catch (_: Throwable) {}; lastKeepAlive=now }
-            delay(400)
+            } catch (_: NemApiException) { /* transient DOM/renderer failure before submit */ }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastKeepAlive >= 5_000L) { try { onKeepAlive() } catch (_: Throwable) {}; lastKeepAlive = now }
+            delay(750L)
         }
         if (differentUrl) throw NemApiException.notReady("La discussion DeepSeek a changé ; aucun message n'a été envoyé.")
         if (loginObserved) throw NemApiException.login()
@@ -564,7 +572,9 @@ object DeepSeek {
                 throw NemApiException(NemApiException.STREAM_INTERRUPTED,
                     "Aucune progression de DeepSeek pendant deux minutes ; vérifiez la discussion avant de reprendre.")
             }
-            delay(POLL_MS)
+            // DOM fallback is much heavier than reading the hook offset. Back off
+            // when scanning the rendered transcript instead of querying it 4x/sec.
+            delay(if (mode == "dom") DOM_POLL_MS else POLL_MS)
         }
 
         // fin de flux : si le hook n'a rien donné, on tente le DOM

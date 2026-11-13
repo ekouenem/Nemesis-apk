@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import com.nemap.android.core.NemApiException
 import com.nemap.android.core.NemLog
+import com.nemap.android.core.DomHealth
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -45,39 +46,66 @@ object Engine {
         }
     }
 
-    /** Évalue du JS et rend la valeur déballée (String) ou null. */
+    /**
+     * Évalue du JS et rend la valeur déballée (String) ou null.
+     *
+     * Le délai est compté à partir de l'appel effectif à `evaluateJavascript`,
+     * PAS à partir de la mise en file. Quand le looper principal est saturé
+     * (appareil 32 bits, longue session, rendu de l'historique), un timer
+     * posté avant l'envoi devient immédiatement échu et précède le callback
+     * asynchrone du WebView dans la file : c'était la cause des faux
+     * « Le moteur DOM n'a pas répondu dans le délai imparti. ».
+     */
     suspend fun evalJs(js: String, timeoutMs: Long = 25_000): String? {
         val wv = WebViewHost.webView
             ?: throw NemApiException.notReady("Le navigateur intégré n'a pas encore été ouvert.")
         val done = AtomicBoolean(false)
         return suspendCancellableCoroutine { cont ->
-            val timer = Runnable {
-                if (done.compareAndSet(false, true) && cont.isActive) {
-                    cont.resumeWithException(NemApiException.timeout("Le moteur DOM n'a pas répondu dans le délai imparti."))
-                }
-            }
-            main.postDelayed(timer, timeoutMs)
-            main.post {
-                // A timed-out or cancelled call which has not yet reached the
-                // WebView must not execute later (especially a submit action).
-                if (done.get() || !cont.isActive) return@post
-                try {
-                    wv.evaluateJavascript(js) { value ->
+            var timer: Runnable? = null
+            val dispatch = Runnable {
+                // Un appel expiré ou annulé ne doit jamais atteindre le WebView
+                // plus tard (en particulier une action d'envoi).
+                if (!done.get() && cont.isActive) {
+                    val dueAt = android.os.SystemClock.uptimeMillis() + timeoutMs
+                    val t = Runnable {
                         if (done.compareAndSet(false, true) && cont.isActive) {
-                            main.removeCallbacks(timer)
-                            cont.resume(unwrap(value))
+                            val lag = (android.os.SystemClock.uptimeMillis() - dueAt).coerceAtLeast(0)
+                            val blocked = DomHealth.noteTimeout(timeoutMs, lag)
+                            NemLog.w(
+                                "dom",
+                                "évaluation JS sans réponse après ${timeoutMs}ms " +
+                                    "(retard looper ${lag}ms, échecs consécutifs ${DomHealth.consecutiveTimeouts})"
+                            )
+                            cont.resumeWithException(
+                                if (blocked) NemApiException.domUnresponsive()
+                                else NemApiException.timeout("Le moteur DOM n'a pas répondu dans le délai imparti.")
+                            )
                         }
                     }
-                } catch (t: Throwable) {
-                    if (done.compareAndSet(false, true) && cont.isActive) {
-                        main.removeCallbacks(timer)
-                        cont.resumeWithException(NemApiException.notReady("Évaluation JS impossible : ${t.message}"))
+                    timer = t
+                    main.postDelayed(t, timeoutMs)
+                    try {
+                        wv.evaluateJavascript(js) { value ->
+                            if (done.compareAndSet(false, true) && cont.isActive) {
+                                main.removeCallbacks(t)
+                                DomHealth.noteSuccess()
+                                cont.resume(unwrap(value))
+                            }
+                        }
+                    } catch (t2: Throwable) {
+                        if (done.compareAndSet(false, true) && cont.isActive) {
+                            main.removeCallbacks(t)
+                            cont.resumeWithException(
+                                NemApiException.notReady("Évaluation JS impossible : ${t2.message}")
+                            )
+                        }
                     }
                 }
             }
+            main.post(dispatch)
             cont.invokeOnCancellation {
                 done.set(true)
-                main.removeCallbacks(timer)
+                timer?.let { main.removeCallbacks(it) }
             }
         }
     }
@@ -150,14 +178,27 @@ object Engine {
 
     suspend fun currentUrl(): String = evalJs("location.href", 5_000) ?: ""
 
-    /** Retry ONLY idempotent observation, never a submit, tap, upload or edit. */
-    private suspend fun <T> readWithRecovery(onWait: () -> Unit, read: suspend () -> T): T {
+    /**
+     * Retry ONLY idempotent observation, never a submit, tap, upload or edit.
+     *
+     * Le budget augmente à chaque essai : sur un renderer dont les timers JS
+     * sont bridés en arrière-plan (WebView en tâche de fond, appareil 32 bits),
+     * trois lectures avec le même délai trop court échouaient ensemble et
+     * interrompaient le flux. Une réussite remet la santé du moteur à zéro.
+     */
+    private suspend fun <T> readWithRecovery(
+        baseTimeoutMs: Long,
+        onWait: () -> Unit,
+        read: suspend (Long) -> T
+    ): T {
         var attempt = 0
         while (true) {
-            try { return read() }
-            catch (e: NemApiException) {
+            val budget = baseTimeoutMs + attempt * 6_000L
+            try {
+                return read(budget)
+            } catch (e: NemApiException) {
                 if (e.code != NemApiException.TIMEOUT || ++attempt >= 3) throw e
-                NemLog.w("dom", "Lecture WebView momentanément lente : nouvelle observation sans nouvel envoi")
+                NemLog.w("dom", "Lecture WebView lente (budget ${budget}ms) : nouvelle observation sans nouvel envoi")
                 try { onWait() } catch (_: Exception) {}
                 kotlinx.coroutines.delay(350L * attempt)
             }
@@ -167,14 +208,14 @@ object Engine {
     /** Restricted to observation methods; deliberately cannot submit or tap. */
     suspend fun readAdapter(method: String, timeoutMs: Long = 8_000, onWait: () -> Unit = {}): JSONObject {
         require(method in setOf("answer", "generating", "continueAvailable")) { "Méthode DOM non autorisée pour une nouvelle lecture" }
-        return readWithRecovery(onWait) { adapter(method, timeoutMs = timeoutMs) }
+        return readWithRecovery(timeoutMs, onWait) { budget -> adapter(method, timeoutMs = budget) }
     }
 
     /** Read only the not-yet-consumed portion of the current hook stream. */
     suspend fun streamState(offset: Int = 0, onWait: () -> Unit = {}): JSONObject {
         require(offset >= 0)
-        return readWithRecovery(onWait) {
-            evalJson("window.__nap ? window.__nap.state($offset) : JSON.stringify({started:false})", 8_000)
+        return readWithRecovery(8_000L, onWait) { budget ->
+            evalJson("window.__nap ? window.__nap.state($offset) : JSON.stringify({started:false})", budget)
         }
     }
 

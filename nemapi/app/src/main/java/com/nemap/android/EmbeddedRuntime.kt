@@ -48,4 +48,7 @@ object EmbeddedRuntime {
     }
     @JvmStatic fun port(): Int = api?.boundPort() ?: -1
     @JvmStatic fun token(): String = secret
+
+    /** Action utilisateur explicite : reconstruit le moteur DOM sans toucher au pont privé. */
+    @JvmStatic fun restartDom() { WebViewHost.restart() }
 }

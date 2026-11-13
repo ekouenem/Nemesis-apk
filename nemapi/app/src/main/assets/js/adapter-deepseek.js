@@ -76,6 +76,11 @@
     }
   }
 
+  function isInputCandidate(el) {
+    if (!el || !visible(el) || el.disabled || el.readOnly) return false;
+    return !!(el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT");
+  }
+
   function inputCandidates() {
     var out = [];
     var seen = new Set();
@@ -88,21 +93,29 @@
       }
       for (var k = 0; k < nodes.length; k++) {
         var el = nodes[k];
-        if (seen.has(el)) continue;
-        if (!visible(el)) continue;
-        if (el.disabled || el.readOnly) continue;
-        if (el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
-          seen.add(el);
-          out.push(el);
-        }
+        if (seen.has(el) || !isInputCandidate(el)) continue;
+        seen.add(el);
+        out.push(el);
       }
     }
     return out;
   }
 
+  // Readiness is polled repeatedly on slow devices. Stop at the first
+  // priority match instead of scanning every selector across a long thread.
   function findInput() {
-    var c = inputCandidates();
-    return c.length ? c[0] : null;
+    for (var i = 0; i < INPUT.length; i++) {
+      var nodes;
+      try {
+        nodes = document.querySelectorAll(INPUT[i]);
+      } catch (e) {
+        continue;
+      }
+      for (var k = 0; k < nodes.length; k++) {
+        if (isInputCandidate(nodes[k])) return nodes[k];
+      }
+    }
+    return null;
   }
 
   function disabled(el) {
@@ -296,8 +309,15 @@
 
   function messageEls() {
     for (var i = 0; i < MESSAGE.length; i++) {
-      var nodes = document.querySelectorAll(MESSAGE[i]);
-      if (nodes.length) return Array.prototype.slice.call(nodes);
+      var nodes;
+      try {
+        nodes = document.querySelectorAll(MESSAGE[i]);
+      } catch (e) {
+        continue;
+      }
+      // Keep the live NodeList; copying a long virtualized transcript on every
+      // polling tick doubles transient memory pressure on 32-bit WebViews.
+      if (nodes.length) return nodes;
     }
     return [];
   }
@@ -316,16 +336,29 @@
   }
 
   function answerText() {
-    var els = messageEls(), assistants = [];
-    // The final .ds-message can be the user's just-submitted message. Never
-    // treat it as an assistant response, or count it as a fresh assistant turn.
+    // Query assistant blocks directly once. The old path walked every message
+    // and ran a descendant query for each one on every stream poll; that cost
+    // grew with the entire conversation and starved WebView on 32-bit devices.
+    var assistants;
+    try {
+      assistants = document.querySelectorAll(".ds-assistant-message-main-content");
+    } catch (e) {
+      assistants = [];
+    }
+    if (assistants && assistants.length) {
+      var last = assistants[assistants.length - 1];
+      return { ok: true, text: cleanText(last.innerText || last.textContent || ""), blocks: assistants.length };
+    }
+
+    // Compatibility fallback for older DOM variants without the stable class.
+    var els = messageEls(), legacy = [];
     for (var i = 0; i < els.length; i++) {
       var main = els[i].querySelector(".ds-assistant-message-main-content");
-      if (main) assistants.push(main);
+      if (main) legacy.push(main);
     }
-    if (!assistants.length) return { ok: false, reason: "answer_missing", text: "", blocks: 0 };
-    var last = assistants[assistants.length - 1];
-    return { ok: true, text: cleanText(last.innerText || last.textContent || ""), blocks: assistants.length };
+    if (!legacy.length) return { ok: false, reason: "answer_missing", text: "", blocks: 0 };
+    var lastLegacy = legacy[legacy.length - 1];
+    return { ok: true, text: cleanText(lastLegacy.innerText || lastLegacy.textContent || ""), blocks: legacy.length };
   }
 
   function generating() {
@@ -606,6 +639,37 @@
         else writeInto(el, "");
       } catch (e) {}
       return J({ ok: true });
+    },
+
+    /** Diagnostic en lecture seule des commandes visibles de la liste de chats. */
+    deleteControls: function () {
+      var rows = [];
+      var selector = "button,[role=\'button\'],a[role=\'button\'],input[type=\'checkbox\'],[role=\'checkbox\'],[aria-label]:not([aria-label=\'\']),[data-virtual-list-item-key]";
+      try {
+        Array.prototype.forEach.call(document.querySelectorAll(selector), function (el) {
+          if (!visible(el) || rows.length >= 120) return;
+          var r = el.getBoundingClientRect();
+          var href = el.getAttribute && el.getAttribute("href");
+          var path = "";
+          if (href) { try { path = new URL(href, location.href).pathname; } catch (e) { path = ""; } }
+          var semanticLabel = el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("data-testid"));
+          // Only read visible text for native buttons and explicit chat-row links.
+          // Never serialize arbitrary DIV contents: that can expose conversation messages.
+          var text = String(semanticLabel || ((el.tagName === "BUTTON" || (el.tagName === "A" && el.getAttribute("role") === "button")) ? (el.innerText || el.textContent || "") : ""))
+            .replace(/\s+/g, " ").trim().slice(0, 100);
+          rows.push({
+            tag: el.tagName || "", role: el.getAttribute && el.getAttribute("role") || "",
+            aria: el.getAttribute && el.getAttribute("aria-label") || "",
+            title: el.getAttribute && el.getAttribute("title") || "",
+            testid: el.getAttribute && el.getAttribute("data-testid") || "",
+            cls: String(el.className || "").slice(0, 100), text: text, href: path,
+            checked: !!el.checked || (el.getAttribute && el.getAttribute("aria-checked") === "true"),
+            disabled: !!el.disabled || (el.getAttribute && el.getAttribute("aria-disabled") === "true"),
+            x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)
+          });
+        });
+      } catch (e) {}
+      return J({ ok: true, path: location.pathname, title: document.title, controls: rows });
     },
 
     /** Diagnostic : structure de la page, SANS le texte des conversations. */

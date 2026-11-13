@@ -121,6 +121,29 @@ class MobileTests(unittest.TestCase):
         recorded=json.loads(m.get_session(sid))['messages']; tool=json.loads([x['text'] for x in recorded if x['role']=='tool'][-1])
         self.assertTrue(tool['result']['success'])
 
+    def test_live_preview_is_cleared_before_persisted_prose_and_tool(self):
+        sid=json.loads(m.create_session('work'))['id']
+        prose='Je prépare le fichier maintenant.'
+        action=json.dumps({'tool':'write_file','parameters':{'path':'rapport.txt','content':'ok'}})
+        provider=Mock(); provider.url=None
+        provider.send_message.side_effect=[
+            {'success':True,'response':prose+'\n```json\n'+action+'\n```'},
+            {'success':True,'response':'Le fichier est prêt.'},
+        ]
+        m._set_live(sid,prose)
+        seen=[]; original=m._tool
+        def inspect_tool(name,args,session):
+            seen.append(json.loads(m.live_progress(sid))['text'])
+            return original(name,args,session)
+        with patch.object(m,'SessionProvider',return_value=provider), patch.object(m,'_tool',side_effect=inspect_tool):
+            result=json.loads(m.send(sid,'Crée un rapport'))
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(seen,[''])
+        messages=json.loads(m.get_session(sid))['messages']
+        self.assertEqual([x['role'] for x in messages],['user','assistant','tool','assistant'])
+        self.assertEqual(messages[1]['text'],prose)
+        self.assertEqual(messages[-1]['text'],'Le fichier est prêt.')
+
     def test_session_url_must_be_confirmed(self):
         sid=json.loads(m.create_session('chat'))['id']
         with m._db() as db: db.execute('UPDATE sessions SET uncertain=1 WHERE id=?',(sid,))

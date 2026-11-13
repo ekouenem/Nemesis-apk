@@ -29,6 +29,8 @@ import com.nemap.android.service.BridgeService
 import com.nemap.android.ui.Ui
 import com.nemap.android.ui.Ui.dp
 import com.nemap.android.web.WebViewHost
+import com.nemap.android.web.Engine
+import android.app.AlertDialog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -288,6 +290,25 @@ class MainActivity : Activity() {
             // navigate home and erase a challenge or an in-progress conversation.
             openBrowser()
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (BuildConfig.DEBUG) {
+            prov.addView(Ui.button(this, "Inspecter DOM suppression (lecture seule)", accent = Ui.SKY) {
+                scope.launch {
+                    val report = try {
+                        Engine.ensureAdapter()
+                        Engine.adapter("deleteControls").toString(2)
+                    } catch (t: Throwable) {
+                        JSONObject().put("ok", false).put("error", t.message ?: "diagnostic indisponible").toString(2)
+                    }
+                    val body = Ui.text(this@MainActivity, report, 10f, Ui.MUTED, mono = true).apply {
+                        setTextIsSelectable(true); setPadding(dp(this@MainActivity, 12f), dp(this@MainActivity, 8f), dp(this@MainActivity, 12f), dp(this@MainActivity, 8f))
+                    }
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("DOM DeepSeek — lecture seule")
+                        .setView(ScrollView(this@MainActivity).apply { addView(body) })
+                        .setPositiveButton("Fermer", null).show()
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         page.addView(prov)
 
         // renvoi vers l'onglet dédié

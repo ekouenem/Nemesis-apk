@@ -20,6 +20,8 @@ class NemApiException(
         const val NETWORK_ERROR = "network_error"
         const val STREAM_INTERRUPTED = "stream_interrupted"
         const val TIMEOUT = "timeout"
+        /** Renderer vivant mais durablement muet : exige un redemarrage explicite. */
+        const val DOM_UNRESPONSIVE = "dom_unresponsive"
         const val CANCELLED = "cancelled"
         const val UPSTREAM_ERROR = "upstream_error"
 
@@ -38,6 +40,13 @@ class NemApiException(
 
         fun timeout(what: String) = NemApiException(TIMEOUT, what)
 
+        fun domUnresponsive() = NemApiException(
+            DOM_UNRESPONSIVE,
+            "Le moteur DOM ne répond plus après plusieurs délais dépassés. "
+                + "Redémarre-le depuis Paramètres → « Redémarrer le moteur DOM ». "
+                + "Le message n’est pas renvoyé automatiquement ; vérifie la discussion avant de reprendre."
+        )
+
         fun cancelled() = NemApiException(CANCELLED, "La génération a été annulée.")
     }
 }
@@ -54,6 +63,7 @@ object ErrorTypes {
         NemApiException.USER_INTERVENTION_REQUIRED -> "invalid_request_error"
         NemApiException.CANCELLED -> "cancelled"
         NemApiException.TIMEOUT -> "timeout"
+        NemApiException.DOM_UNRESPONSIVE,
         NemApiException.NETWORK_ERROR,
         NemApiException.STREAM_INTERRUPTED,
         NemApiException.UPSTREAM_ERROR -> "api_error"

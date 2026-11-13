@@ -689,6 +689,7 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
     private fun httpFor(code: String): Int = when (code) {
         NemApiException.PROVIDER_BUSY -> 409
         NemApiException.TIMEOUT -> 504
+        NemApiException.DOM_UNRESPONSIVE -> 503
         else -> 400
     }
 

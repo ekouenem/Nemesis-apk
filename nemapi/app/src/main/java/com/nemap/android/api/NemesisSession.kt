@@ -48,17 +48,34 @@ object NemesisSession {
         // React composer, or recovering from a renderer crash. Never treat URL
         // equality alone as proof the input is ready.
         val deadline = android.os.SystemClock.elapsedRealtime() + 45_000
+        var checkedPageEvent = Long.MIN_VALUE
+        var adapterPageEvent = Long.MIN_VALUE
+        var lastUrlCheckAt = Long.MIN_VALUE
+        var targetPage = false
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
-            delay(350)
+            delay(750)
+            if (WebViewHost.pageLoading) continue
+            val now = android.os.SystemClock.elapsedRealtime()
+            val pageEvent = WebViewHost.lastPageEventAt
+            val stableMs = now - pageEvent
+            if (stableMs < 1000) continue
             try {
-                val now = Engine.currentUrl()
-                val atTarget = normalized(now) == normalized(target)
-                val stableMs = android.os.SystemClock.elapsedRealtime() - WebViewHost.lastPageEventAt
-                if (atTarget && !WebViewHost.pageLoading && stableMs >= 1000 && Engine.evalJs("document.readyState") == "complete") {
-                    Engine.ensureAdapter()
-                    if (Engine.adapter("ready").optBoolean("ok")) return
+                // URL and readiness were previously re-evaluated every 350 ms
+                // (including a separate document.readyState call). On a long
+                // conversation this queued redundant work behind a busy renderer.
+                // Check URL on page events and occasionally for SPA route changes.
+                if (pageEvent != checkedPageEvent || now - lastUrlCheckAt >= 3_000) {
+                    checkedPageEvent = pageEvent
+                    lastUrlCheckAt = now
+                    targetPage = normalized(Engine.currentUrl()) == normalized(target)
                 }
-            } catch (_: Throwable) { /* WebView may still be navigating. */ }
+                if (!targetPage) continue
+                if (adapterPageEvent != pageEvent) {
+                    Engine.ensureAdapter()
+                    adapterPageEvent = pageEvent
+                }
+                if (Engine.adapter("ready", timeoutMs = 5_000).optBoolean("ok")) return
+            } catch (_: Throwable) { /* transient DOM/renderer failure before submit */ }
         }
         throw NemApiException.timeout("Conversation DeepSeek non prête ; aucun message n'a été envoyé.")
     }

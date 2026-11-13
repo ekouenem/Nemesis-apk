@@ -37,16 +37,16 @@ object SshBridge {
         return generator.generateKey()
     }
     fun save(host: String, port: Int, user: String, fingerprint: String, password: String) {
-        require(host.isNotBlank() && user.isNotBlank() && port in 1..65535) { "Hôte, port ou utilisateur invalide" }
+        val endpoint = SshEndpoint.parse(host, port.toString(), user)
         val fp = fingerprint.trim()
         require(fp.isEmpty() || (fp.startsWith("SHA256:") && fp.length in 30..90)) { "Empreinte SHA256 invalide" }
         val previous=details()
-        val retained=if(fp.isNotEmpty()) fp.trimEnd('=') else if(previous.optString("host")==host.trim() && previous.optInt("port")==port) previous.optString("fingerprint") else ""
+        val retained=if(fp.isNotEmpty()) fp.trimEnd('=') else if(previous.optString("host")==endpoint.host && previous.optInt("port")==endpoint.port) previous.optString("fingerprint") else ""
         require(password.isNotEmpty()) { "Mot de passe SSH requis" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.iv + cipher.doFinal(password.toByteArray(Charsets.UTF_8))
-        prefs().edit().putString("host",host.trim()).putInt("port",port).putString("user",user.trim())
+        prefs().edit().putString("host",endpoint.host).putInt("port",endpoint.port).putString("user",endpoint.user)
             .putString("fingerprint",retained)
             .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit()
     }
@@ -58,6 +58,20 @@ object SshBridge {
         return String(cipher.doFinal(raw.copyOfRange(12,raw.size)), Charsets.UTF_8)
     }
     fun clear() { check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." } }
+
+    /** Explicit user-requested probe. No command is executed on the remote host. */
+    @JvmStatic fun testConnection(): String {
+        var session: com.jcraft.jsch.Session? = null
+        return try {
+            session = connect()
+            val config = details()
+            JSONObject().put("success",true).put("host",config.optString("host"))
+                .put("port",config.optInt("port")).put("user",config.optString("user"))
+                .put("fingerprint",config.optString("fingerprint")).toString()
+        } catch (e: Exception) {
+            JSONObject().put("success",false).put("error","SSH : " + (e.message ?: e.javaClass.simpleName)).toString()
+        } finally { session?.disconnect() }
+    }
 
     @Synchronized internal fun connect(): com.jcraft.jsch.Session {
         val config = details()
@@ -101,16 +115,24 @@ object SshBridge {
             channel = session.openChannel("exec") as com.jcraft.jsch.ChannelExec
             channel.setCommand(command)
             val bytes = ByteArrayOutputStream()
+            val outputLimit = 512 * 1024
+            val outputTruncated = java.util.concurrent.atomic.AtomicBoolean(false)
             val capped = object : OutputStream() {
-                @Synchronized override fun write(b: Int) { bytes.write(b) }
-                @Synchronized override fun write(b: ByteArray, off: Int, len: Int) { bytes.write(b, off, len) }
+                @Synchronized override fun write(b: Int) {
+                    if (bytes.size() < outputLimit) bytes.write(b) else outputTruncated.set(true)
+                }
+                @Synchronized override fun write(b: ByteArray, off: Int, len: Int) {
+                    val keep = (outputLimit - bytes.size()).coerceAtLeast(0).coerceAtMost(len)
+                    if (keep > 0) bytes.write(b, off, keep)
+                    if (keep < len) outputTruncated.set(true)
+                }
             }
             channel.setOutputStream(capped); channel.setErrStream(capped); channel.connect(15_000)
             val until = System.currentTimeMillis() + timeoutSeconds.coerceAtLeast(1).toLong() * 1000L
             while (!channel.isClosed && System.currentTimeMillis() < until) Thread.sleep(100)
             if (!channel.isClosed) JSONObject().put("success",false).put("error","Délai SSH dépassé ; la commande distante peut continuer.")
             else JSONObject().put("success",channel.exitStatus == 0).put("exit_code",channel.exitStatus)
-                .put("output", bytes.toString("UTF-8")).put("truncated", false)
+                .put("output", bytes.toString("UTF-8")).put("truncated", outputTruncated.get())
         } catch (e: Exception) {
             JSONObject().put("success",false).put("error", "SSH : " + (e.message ?: e.javaClass.simpleName))
         } finally { channel?.disconnect(); session?.disconnect() }

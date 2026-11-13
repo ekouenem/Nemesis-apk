@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.nemap.android.core.AppState
+import com.nemap.android.core.DomHealth
 import com.nemap.android.core.Cookies
 import com.nemap.android.core.NemLog
 
@@ -45,6 +46,7 @@ object WebViewHost {
     private fun rememberSafeUrl(url:String?) {
         try { val u=java.net.URI(url ?: ""); if(u.scheme=="https" && u.host=="chat.deepseek.com" && u.port == -1 && u.userInfo==null) lastSafeUrl=url!! } catch(_:Exception) {}
     }
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var container: ViewGroup? = null
     private var appContext: Context? = null
 
@@ -122,7 +124,7 @@ object WebViewHost {
                 if(view != null && view === webView) {
                     NemLog.w("dom", "Processus WebView interrompu : reconstruction du navigateur")
                     (view.parent as? ViewGroup)?.removeView(view)
-                    webView=null; pageLoading=false; currentUrl=lastSafeUrl
+                    webView=null; pageLoading=false; currentUrl=lastSafeUrl; DomHealth.noteRestart()
                     try { view.destroy() } catch (_:Throwable) {}
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         try { appContext?.let { ensure(it) } } catch(e:Throwable) { NemLog.w("dom", "Reconstruction WebView impossible : ${e.message}") }
@@ -193,6 +195,35 @@ object WebViewHost {
 
     fun reload() {
         webView?.reload()
+    }
+
+    /**
+     * Redémarrage EXPLICITE du moteur DOM, uniquement sur action utilisateur.
+     * Jamais appelé depuis un chemin de timeout : reconstruire la page sans
+     * demande risquerait d'ouvrir ou restaurer une session du provider.
+     * Cookies, URL sûre mémorisée et données sont conservés ; aucun message
+     * n'est renvoyé et l'état « incertain » de la discussion reste intact.
+     */
+    fun restart() {
+        main.post {
+            val old = webView
+            webView = null
+            pageLoading = false
+            (old?.parent as? ViewGroup)?.removeView(old)
+            try { old?.destroy() } catch (_: Throwable) {}
+            DomHealth.noteRestart()
+            val ctx = appContext
+            if (ctx != null) {
+                try {
+                    ensure(ctx)
+                    NemLog.i("dom", "moteur DOM redémarré à la demande de l'utilisateur")
+                } catch (t: Throwable) {
+                    NemLog.w("dom", "Redémarrage DOM impossible : ${t.message}")
+                }
+            } else {
+                NemLog.w("dom", "Redémarrage DOM impossible : contexte applicatif indisponible")
+            }
+        }
     }
 
     /** Version du provider WebView installé (Google WebView ou AOSP). */

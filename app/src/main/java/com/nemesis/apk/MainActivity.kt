@@ -27,6 +27,10 @@ import java.util.UUID
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Environment
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.Scope
+import com.google.android.gms.common.api.ApiException
 
 class MainActivity : Activity() {
     private val white = Color.rgb(255,255,255)
@@ -42,6 +46,8 @@ class MainActivity : Activity() {
     private val attachments = mutableMapOf<String,MutableList<JSONObject>>()
     private var currentSession: String? = null
     private var currentMode = "chat"
+    private var newConversationMode = "work"
+    private var workspaceUploadSession: String? = null
     private val busy get() = JobRunner.busySession != null
     private val busySession get() = JobRunner.busySession
     private val pendingPreview get() = JobRunner.preview
@@ -78,6 +84,7 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE), 501)
         }
         SshBridge.init(this); McpSecretBridge.init(this)
+        GitHubConnectorBridge.init(this); GoogleWorkspaceBridge.init(this)
         val id = saved?.getString("session")
         if (id != null) { drafts[id] = saved.getString("draft", ""); showChat(id) } else showHome()
         // Start after heavy Activity initialization so Android can dispatch the service promptly.
@@ -299,10 +306,10 @@ class MainActivity : Activity() {
         val titles = column().apply { setPadding(dp(7),0,0,0); addView(label(title,16f,strong,true).apply { maxLines = 1 }); addView(label(subtitle,11f,muted)) }
         row.addView(titles, LinearLayout.LayoutParams(0,-2,1f))
         val sessionId = if (screen == "chat") currentSession else null
-        if (sessionId != null) {
-            row.addView(action("📁", Color.TRANSPARENT, primary) { showSessionFiles(sessionId) }.apply { textSize=22f; contentDescription="Fichiers de cette discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        if (sessionId != null && currentMode != "chat" && chatLoadingId != sessionId) {
+            row.addView(action("📁", Color.TRANSPARENT, primary) { showSessionFiles(sessionId) }.apply { textSize=22f; contentDescription="Fichiers du workspace de cette discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
         } else {
-            row.addView(action("＋", Color.TRANSPARENT, primary) { chooseMode() }.apply { textSize = 24f; contentDescription = "Nouvelle discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
+            row.addView(action("＋", Color.TRANSPARENT, primary) { showHome() }.apply { textSize = 24f; contentDescription = "Nouvelle discussion" }, LinearLayout.LayoutParams(dp(48),dp(48)))
         }
         return row
     }
@@ -319,39 +326,93 @@ class MainActivity : Activity() {
         else -> "Une conversation, tout simplement"
     }
     private fun showHome() {
-        screen = "home"; currentSession = null; frame(); root.addView(topBar("NEMESIS", "Votre assistant personnel")); root.addView(separator())
+        screen = "home"; currentSession = null; newConversationMode = "work"
+        frame(); root.addView(topBar("NEMESIS", "Votre assistant personnel")); root.addView(separator())
         val (_, body) = scrollArea(24)
         body.gravity = Gravity.CENTER_HORIZONTAL
-        body.addView(gap(40))
+        body.addView(gap(30))
         body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType = ImageView.ScaleType.CENTER_CROP; background = shape(pale,20); clipToOutline = true; contentDescription = "Logo NEMESIS" }, LinearLayout.LayoutParams(dp(62),dp(62)))
-        body.addView(gap(23))
-        body.addView(label("Bonjour,", 29f,strong,true).apply { gravity=Gravity.CENTER }); body.addView(label("comment puis-je vous aider ?", 23f,strong,true).apply { gravity = Gravity.CENTER })
-        body.addView(gap(10)); body.addView(label("Choisissez un espace pour commencer.", 14f,muted).apply { gravity = Gravity.CENTER })
-        body.addView(gap(32))
-        for ((mode,title,desc) in listOf(Triple("chat","Discuter", "Échanger et explorer des idées"),Triple("work","Travailler", "Fichiers et tâches du quotidien"),Triple("code","Coder", "Développer avec votre environnement"))) {
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16),dp(14),dp(14),dp(14)); background = shape(white,18,line)
-                val icon = label(when(mode){"work"->"▤";"code"->"</>";else->"C"},18f,primary,true).apply { gravity = Gravity.CENTER; background = shape(pale,12) }
-                addView(icon, LinearLayout.LayoutParams(dp(46),dp(46)))
-                val txt = column().apply { setPadding(dp(14),0,0,0); addView(label(title,15f,strong,true)); addView(label(desc,12f,muted)) }
-                addView(txt,LinearLayout.LayoutParams(0,-2,1f)); addView(label("›",24f,muted))
-                isClickable = true; isFocusable = true; setOnClickListener { create(mode) }
+        body.addView(gap(22))
+        body.addView(label("Bonjour,", 28f,strong,true).apply { gravity=Gravity.CENTER })
+        body.addView(label("qu’allons-nous faire ?", 22f,strong,true).apply { gravity=Gravity.CENTER })
+        body.addView(gap(9))
+        body.addView(label("Choisissez un espace, puis commencez une nouvelle discussion.", 14f,muted).apply { gravity=Gravity.CENTER })
+        body.addView(gap(28))
+        val detail=label("",14f,muted).apply { gravity=Gravity.CENTER; setPadding(dp(8),0,dp(8),0); minHeight=dp(44) }
+        val begin=action("Commencer en Work",primary,white) { create(newConversationMode) }.apply { contentDescription="Commencer une nouvelle discussion en Work" }
+        val selector=modeSelector { mode ->
+            val title=modeName(mode)
+            detail.text=when(mode) {
+                "chat" -> "Une conversation pour poser vos questions, apprendre et créer."
+                "code" -> "Un espace pour développer, explorer vos dépôts et utiliser SSH."
+                else -> "Un espace pour vos recherches, documents et tâches de travail."
             }
-            body.addView(card, LinearLayout.LayoutParams(-1,-2)); body.addView(gap(10))
+            begin.text="Commencer en $title"
+            begin.contentDescription="Commencer une nouvelle discussion en $title"
         }
-        body.addView(gap(18)); body.addView(label("Vos conversations sont dans le menu latéral.",12f,muted).apply { gravity = Gravity.CENTER })
+        body.addView(selector,LinearLayout.LayoutParams(-1,dp(54)))
+        body.addView(gap(16)); body.addView(detail,LinearLayout.LayoutParams(-1,-2))
+        body.addView(gap(18)); body.addView(begin,LinearLayout.LayoutParams(-1,dp(54)))
+        body.addView(gap(18))
+        body.addView(label("Vos discussions précédentes restent accessibles dans le menu latéral.",12f,muted).apply { gravity=Gravity.CENTER })
+    }
+    private fun modeSelector(onSelected:(String)->Unit):View {
+        val modes=listOf("chat","work","code")
+        val captions=listOf("Chat","Work","Code")
+        val outer=FrameLayout(this).apply { background=shape(sidebar,18,line); clipToOutline=true; contentDescription="Sélecteur de mode" }
+        val indicator=View(this).apply { background=shape(white,14,line); importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+        outer.addView(indicator,FrameLayout.LayoutParams(0,dp(44),Gravity.START or Gravity.CENTER_VERTICAL).apply { leftMargin=dp(5) })
+        val labels=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; setPadding(dp(5),0,dp(5),0); gravity=Gravity.CENTER_VERTICAL }
+        var moveIndicator:((String,Boolean)->Unit)?=null
+        modes.forEachIndexed { index,mode ->
+            val cell=TextView(this).apply {
+                text=captions[index]; textSize=14f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER
+                minHeight=dp(48); isClickable=true; isFocusable=true; contentDescription="Mode ${captions[index]}"
+                setOnClickListener { newConversationMode=mode; onSelected(mode); moveIndicator?.invoke(mode,true) }
+            }
+            var downX=0f; var swiped=false
+            cell.setOnTouchListener { view,event ->
+                when(event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> { downX=event.rawX; swiped=false; true }
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        val dx=event.rawX-downX
+                        if(kotlin.math.abs(dx)>=dp(36)) {
+                            val current=modes.indexOf(newConversationMode).coerceAtLeast(0)
+                            val next=(current+if(dx<0) 1 else -1).coerceIn(0,modes.lastIndex)
+                            if(next!=current) { val mode=modes[next]; newConversationMode=mode; onSelected(mode); moveIndicator?.invoke(mode,true) }
+                            downX=event.rawX; swiped=true
+                        }
+                        true
+                    }
+                    android.view.MotionEvent.ACTION_UP -> { if(!swiped) view.performClick(); true }
+                    android.view.MotionEvent.ACTION_CANCEL -> true
+                    else -> true
+                }
+            }
+            labels.addView(cell,LinearLayout.LayoutParams(0,-1,1f))
+        }
+        outer.addView(labels,FrameLayout.LayoutParams(-1,-1))
+        fun positionIndicator(animate:Boolean) {
+            val available=outer.width-dp(10)
+            if(available<=0) return
+            val cellWidth=available/3
+            val params=indicator.layoutParams as FrameLayout.LayoutParams
+            if(params.width!=cellWidth || params.height!=outer.height-dp(10)) {
+                params.width=cellWidth; params.height=outer.height-dp(10); indicator.layoutParams=params
+            }
+            val x=modes.indexOf(newConversationMode).coerceAtLeast(0)*cellWidth
+            if(animate) indicator.animate().translationX(x.toFloat()).setDuration(180).start() else indicator.translationX=x.toFloat()
+            for(i in 0 until labels.childCount) (labels.getChildAt(i) as TextView).setTextColor(if(modes[i]==newConversationMode) primary else muted)
+        }
+        outer.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_-> positionIndicator(false) }
+        outer.post { positionIndicator(false); onSelected(newConversationMode) }
+        moveIndicator={ mode,animate -> newConversationMode=mode; positionIndicator(animate) }
+        return outer
     }
     private fun create(mode: String) {
         if (busy) { toast("Attendez la fin de la réponse en cours."); return }
         val r = JSONObject(py.callAttr("create_session",mode).toString())
         if (r.optBoolean("ok")) showChat(r.getString("id")) else toast(r.optString("error"))
-    }
-    private fun chooseMode() {
-        sheet("Nouvelle discussion", "Choisissez l’espace adapté à votre besoin.") { body, dialog ->
-            for ((mode,title,desc) in listOf(Triple("chat","Chat","Échanger, apprendre et créer"),Triple("work","Work","Recherche et travail de bureau"),Triple("code","Code","Développement et environnement SSH"))) {
-                body.addView(sheetRow(title,desc) { dialog.dismiss(); create(mode) }); body.addView(gap(9))
-            }
-        }
     }
     private fun closeDrawer() { drawer?.let { host.value?.removeView(it) }; drawer = null }
     private fun openDrawer() {
@@ -367,7 +428,7 @@ class MainActivity : Activity() {
         brand.addView(column().apply { setPadding(dp(11),0,0,0); addView(label("NEMESIS",15f,strong,true)); addView(label("Votre espace IA",11f,muted)) },LinearLayout.LayoutParams(0,-2,1f))
         brand.addView(action("×",Color.TRANSPARENT,muted) { closeDrawer() }.apply { textSize=23f; contentDescription="Fermer le menu" },LinearLayout.LayoutParams(dp(48),dp(48)))
         menu.addView(brand); menu.addView(gap(25))
-        menu.addView(action("＋    Nouvelle discussion",pale,primary) { closeDrawer(); chooseMode() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START }); menu.addView(gap(14))
+        menu.addView(action("＋    Nouvelle discussion",pale,primary) { closeDrawer(); showHome() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START }); menu.addView(gap(14))
         val search = EditText(this).apply { hint="Rechercher une discussion"; textSize=14f; setSingleLine(true); setTextColor(strong); setHintTextColor(muted); background=shape(Color.rgb(235,242,248),14); setPadding(dp(13),0,dp(13),0); minHeight=dp(48) }
         menu.addView(search); menu.addView(gap(20)); menu.addView(label("DISCUSSIONS",11f,muted,true)); menu.addView(gap(7))
         val list = column(); val scroll = ScrollView(this).apply { addView(list); isFillViewport=true }
@@ -659,7 +720,7 @@ class MainActivity : Activity() {
                                             last = partial; live.visibility = if(partial.isBlank()) View.GONE else View.VISIBLE
                                             // A bounded preview avoids re-laying out the entire growing response on every frame.
                                             // Never drag the reader down while new text arrives.
-                                            live.text=partial
+                                            markdown.setMarkdown(live,partial)
                                         }
                                     }
                                 }
@@ -777,15 +838,135 @@ class MainActivity : Activity() {
         return row
     }
     private fun attachmentMenu(id:String) {
-        if((attachments[id]?.size ?: 0)>=4) { toast("Maximum 4 pièces jointes."); return }
-        pickerSession=id
+        val session=try { JSONObject(py.callAttr("get_session",id).toString()) } catch(_:Exception) { JSONObject() }
+        val mode=session.optString("mode",currentMode)
+        val connector=if(mode=="work") "google_workspace" else if(mode=="code") "github" else ""
+        val status=try { JSONObject(py.callAttr("connector_status",connector).toString()) } catch(_:Exception) { JSONObject() }
+        val active=try { py.callAttr("connector_active",id,connector).toString()=="true" } catch(_:Exception) { false }
+        sheet("Ajouter", if(mode=="chat") "Joindre un fichier à cette discussion." else "Pièces jointes et connecteurs propres au mode ${modeName(mode)}.") { body, dialog ->
+            if(mode!="chat") {
+                val title=if(mode=="work") "Google Workspace" else "GitHub"
+                val summary=if(!status.optBoolean("configured")) "Non configuré · Paramètres → Connecteurs" else if(active) "Actif pour cette discussion${if(status.optString("account").isNotBlank()) " · "+status.optString("account") else ""}" else "Connecté, désactivé pour cette discussion"
+                body.addView(sheetRow(title,summary) {
+                    if(!status.optBoolean("configured")) { dialog.dismiss(); showSettings(); showConnectors() }
+                    else {
+                        val next=!active
+                        py.callAttr("connector_set_active",id,connector,next)
+                        if(screen=="chat" && currentSession==id) showChat(id)
+                        dialog.dismiss(); toast(if(next) "$title activé pour cette discussion" else "$title désactivé")
+                    }
+                }); body.addView(gap(8))
+            }
+            body.addView(sheetRow("Choisir un fichier",if((attachments[id]?.size ?: 0)>=4) "Maximum 4 fichiers par message" else "PDF, images et documents") {
+                dialog.dismiss()
+                if((attachments[id]?.size ?: 0)>=4) { toast("Maximum 4 pièces jointes."); return@sheetRow }
+                pickerSession=id
+                val intent=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }
+                try { startActivityForResult(intent,302) } catch(_:Exception) { toast("Sélecteur de fichiers indisponible.") }
+            })
+        }
+    }
+
+    private fun googleSignIn() {
+        val scopes=arrayOf(
+            Scope("https://www.googleapis.com/auth/drive.readonly"),
+            Scope("https://www.googleapis.com/auth/drive.file"),
+            Scope("https://www.googleapis.com/auth/documents"),
+            Scope("https://www.googleapis.com/auth/spreadsheets")
+        )
+        val options=GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail().requestScopes(scopes[0],*scopes.drop(1).toTypedArray()).build()
+        try { startActivityForResult(GoogleSignIn.getClient(this,options).signInIntent,303) }
+        catch(e:Exception) { toast("Google Sign-In indisponible : ${e.message}") }
+    }
+
+    private fun showConnectors() {
+        sheet("Connecteurs", "Chaque connecteur ne donne ses outils qu’aux discussions où tu l’actives via ＋. Les jetons sont chiffrés avec Android Keystore et ne sont pas transmis au modèle.") { body, dialog ->
+            val gh=JSONObject(try { py.callAttr("connector_status","github").toString() } catch(_:Exception) { "{}" })
+            val google=JSONObject(try { py.callAttr("connector_status","google_workspace").toString() } catch(_:Exception) { "{}" })
+            body.addView(sheetRow("GitHub · Code",if(gh.optBoolean("configured")) "Token enregistré · accès à tester" else "Non connecté · token manuel" ) { dialog.dismiss(); editGitHubConnector() }); body.addView(gap(8))
+            body.addView(sheetRow("Google Workspace · Work",if(google.optBoolean("configured")) "Compte lié · accès Drive à tester" else "Non connecté · compte Google" ) { dialog.dismiss(); editGoogleConnector() })
+        }
+    }
+
+    private fun editGitHubConnector() {
+        val old=JSONObject(try { py.callAttr("connector_status","github").toString() } catch(_:Exception) { "{}" })
+        sheet("Connecter GitHub", "Crée un fine-grained PAT limité aux dépôts nécessaires. Autorise Contents: Read-only (lecture) ou Read and write (modification). N’accorde pas d’accès workflow/admin si inutile. Le token est chiffré localement.") { body, dialog ->
+            val username=formField("Nom d’utilisateur GitHub",old.optString("account")); body.addView(username); body.addView(gap(8))
+            val token=formField("Personal access token",secret=true); body.addView(token); body.addView(gap(10))
+            body.addView(action("Enregistrer",primary,white) {
+                try {
+                    val result=py.callAttr("github_save_config",username.text.toString().trim(),token.text.toString().trim()).toString()
+                    val obj=JSONObject(result)
+                    if(obj.optBoolean("ok")) { dialog.dismiss(); toast("GitHub enregistré. Lance « Tester la connexion »."); showSettings() }
+                    else toast(obj.optString("error","Configuration invalide"))
+                } catch(e:Exception) { toast("Impossible d’enregistrer GitHub : ${e.message}") }
+            }); body.addView(gap(8))
+            if(old.optBoolean("configured")) {
+                body.addView(action("Tester la connexion",pale,primary) {
+                    toast("Vérification du token GitHub…")
+                    Thread {
+                        val result=try { JSONObject(py.callAttr("github_test_config").toString()) }
+                            catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message ?: "Erreur") }
+                        runOnUiThread {
+                            if(!isFinishing && !isDestroyed) toast(if(result.optBoolean("ok")) "GitHub connecté : @${result.optString("account")}" else result.optString("error","Test impossible"))
+                        }
+                    }.start()
+                }); body.addView(gap(8))
+                body.addView(action("Déconnecter GitHub",Color.TRANSPARENT,danger) { py.callAttr("github_clear_config"); dialog.dismiss(); showSettings() })
+            }
+        }
+    }
+
+    private fun editGoogleConnector() {
+        val old=JSONObject(try { py.callAttr("connector_status","google_workspace").toString() } catch(_:Exception) { "{}" })
+        sheet("Google Workspace", "Connexion via l’écran Google officiel, pas dans la WebView DeepSeek. Le projet Android doit être enregistré dans Google Cloud Console (APIs Drive, Docs et Sheets activées, OAuth client Android avec le package et le certificat de signature). Accès Drive en lecture + création/modification des fichiers créés par NEMESIS.") { body, dialog ->
+            if(old.optBoolean("configured")) {
+                body.addView(label("Compte lié : ${old.optString("account")} · l’accès Drive doit être vérifié",14f,strong)); body.addView(gap(12))
+                body.addView(action("Tester l’accès Google Drive",pale,primary) {
+                    toast("Vérification de l’accès Google Drive…")
+                    Thread {
+                        val result=try { JSONObject(py.callAttr("google_test_config").toString()) }
+                            catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message ?: "Erreur") }
+                        runOnUiThread {
+                            if(!isFinishing && !isDestroyed) toast(if(result.optBoolean("ok")) "Google Drive fonctionne pour ${result.optString("account")}" else result.optString("error","Test Google impossible"))
+                        }
+                    }.start()
+                }); body.addView(gap(8))
+                body.addView(action("Déconnecter ce compte",Color.TRANSPARENT,danger) {
+                    val options=GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).requestEmail().build()
+                    GoogleSignIn.getClient(this,options).revokeAccess().addOnCompleteListener { task ->
+                        py.callAttr("connector_disconnect","google_workspace"); dialog.dismiss(); showSettings()
+                        if(!task.isSuccessful) toast("Compte déconnecté localement ; révocation Google à confirmer en ligne.")
+                    }
+                }); body.addView(gap(8))
+            }
+            body.addView(action(if(old.optBoolean("configured")) "Reconnecter Google" else "Se connecter avec Google",primary,white) { dialog.dismiss(); googleSignIn() })
+        }
+    }
+    private fun chooseWorkspaceTarget() {
+        val sessions=JSONArray(py.callAttr("list_sessions").toString())
+        sheet("Importer dans un workspace", "Le fichier sera copié dans l’espace local choisi, sans être joint ni envoyé dans une discussion.") { body, dialog ->
+            var count=0
+            for(i in 0 until sessions.length()) {
+                val session=sessions.getJSONObject(i); val mode=session.optString("mode")
+                if(mode!="work" && mode!="code") continue
+                count++; val id=session.optString("id")
+                body.addView(sheetRow(session.optString("title"),modeName(mode)+" · workspace de cette discussion") { dialog.dismiss(); chooseWorkspaceUpload(id) }); body.addView(gap(8))
+            }
+            if(count==0) body.addView(label("Créez d’abord une discussion Work ou Code pour disposer d’un workspace.",14f,muted))
+        }
+    }
+    private fun chooseWorkspaceUpload(id:String) {
+        workspaceUploadSession=id
         val intent=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }
-        try { startActivityForResult(intent,302) } catch(_:Exception) { toast("Sélecteur de fichiers indisponible.") }
+        try { startActivityForResult(intent,304) } catch(_:Exception) { workspaceUploadSession=null; toast("Sélecteur de fichiers indisponible.") }
     }
     private fun showFiles() {
         screen="files"; currentSession=null; frame(); root.addView(topBar("Fichiers","Espaces de travail")); root.addView(separator())
         val (_,body)=scrollArea(20); body.addView(gap(12)); body.addView(label("Espaces de travail",25f,strong,true)); body.addView(gap(6))
-        body.addView(label("Fichiers Work et Code, classés par discussion.",14f,muted)); body.addView(gap(20))
+        body.addView(label("Fichiers Work et Code, classés par discussion.",14f,muted)); body.addView(gap(14))
+        body.addView(action("↑   Importer dans un workspace",pale,primary) { chooseWorkspaceTarget() }); body.addView(gap(18))
         val sessions=JSONArray(py.callAttr("list_sessions").toString()); var shown=0
         for(i in 0 until sessions.length()) {
             val session=sessions.getJSONObject(i); val id=session.optString("id"); val mode=session.optString("mode")
@@ -804,7 +985,8 @@ class MainActivity : Activity() {
     }
     private fun showSessionFiles(id:String) {
         val files=try { JSONArray(py.callAttr("list_files",id).toString()) } catch (e:Exception) { toast(e.message ?: "Espace indisponible"); return }
-        sheet("Fichiers de la discussion", "Les fichiers créés ou rapatriés dans cet espace local.") { body, dialog ->
+        sheet("Workspace · fichiers", "Ces fichiers restent dans l’espace local de la discussion. L’import ne les joint pas au message et ne les envoie pas automatiquement à l’agent.") { body, dialog ->
+            body.addView(action("↑   Importer un fichier ici",pale,primary) { dialog.dismiss(); chooseWorkspaceUpload(id) }); body.addView(gap(12))
             if(files.length()==0) body.addView(label("Aucun fichier pour le moment.",14f,muted))
             for(i in 0 until files.length()) {
                 val item=files.getJSONObject(i); val name=item.optString("name")
@@ -876,10 +1058,73 @@ class MainActivity : Activity() {
     }
     @Deprecated("Deprecated in Java") override fun onActivityResult(request:Int, result:Int, data:Intent?) {
         super.onActivityResult(request,result,data)
+        if(request==303) {
+            if(result==RESULT_OK && data!=null) {
+                try {
+                    val account=GoogleSignIn.getSignedInAccountFromIntent(data).getResult(ApiException::class.java)
+                    val email=account.email ?: throw IllegalStateException("Google n’a pas fourni l’adresse du compte")
+                    GoogleWorkspaceBridge.saveAccount(email)
+                    py.callAttr("connector_refresh_status")
+                    toast("Compte Google lié : $email. Teste l’accès Drive dans Connecteurs.")
+                    if(screen=="settings") showSettings()
+                } catch(e:Exception) {
+                    val status=(e as? com.google.android.gms.common.api.ApiException)?.statusCode
+                    val message=when(status) {
+                        10 -> "OAuth Google mal configuré : ajoute le package com.nemesis.apk et le SHA‑1 de signature dans Google Cloud Console."
+                        12501 -> "Connexion Google annulée."
+                        else -> "Connexion Google échouée : ${e.message ?: "erreur inconnue"}"
+                    }
+                    toast(message)
+                }
+            } else toast("Connexion Google annulée.")
+            return
+        }
         val uri=data?.data
         if(request==301 && result==RESULT_OK && uri!=null && selectedFile!=null) {
             try { File(selectedFile!!).inputStream().use { source -> contentResolver.openOutputStream(uri)?.use { source.copyTo(it) } }; toast("Fichier exporté") } catch(_:Exception) { toast("Export impossible") }
             selectedFile=null
+        }
+        if(request==304) {
+            val id=workspaceUploadSession
+            workspaceUploadSession=null
+            if(result!=RESULT_OK || uri==null || id==null) { if(result!=RESULT_CANCELED) toast("Import annulé."); return }
+            Thread {
+                var reserved:File?=null
+                try {
+                    val session=JSONObject(py.callAttr("get_session",id).toString())
+                    val mode=session.optString("mode")
+                    if(mode!="work" && mode!="code") throw IllegalArgumentException("Le workspace n’est disponible qu’en mode Work ou Code.")
+                    var original="fichier"
+                    contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) original=it.getString(0) ?: original }
+                    original=original.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\u0000-\\u001F]"),"_").trim().trim('.').take(180).ifBlank { "fichier" }
+                    val ext=original.substringAfterLast('.',"").takeIf { it.isNotBlank() && original.contains('.') }
+                    val stem=if(ext==null) original else original.dropLast(ext.length+1).ifBlank { "fichier" }
+                    val directory=File(py.callAttr("workspace_root",id).toString()).canonicalFile
+                    if(!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Impossible de préparer le workspace.")
+                    if(!directory.isDirectory) throw IllegalStateException("Workspace invalide.")
+                    var candidate=File(directory,original); var suffix=2
+                    while(!candidate.createNewFile()) {
+                        val name=if(ext==null) "$stem ($suffix)" else "$stem ($suffix).$ext"
+                        candidate=File(directory,name); suffix++
+                        if(suffix>10_000) throw IllegalStateException("Trop de fichiers portant ce nom.")
+                    }
+                    reserved=candidate
+                    contentResolver.openInputStream(uri)?.use { input -> candidate.outputStream().use { output ->
+                        val buffer=ByteArray(65536); var total=0L; val limit=100L*1024*1024
+                        while(true) { val n=input.read(buffer); if(n<0) break; total+=n; if(total>limit) throw IllegalArgumentException("Fichier trop volumineux (100 Mo maximum). "); output.write(buffer,0,n) }
+                    } } ?: throw IllegalArgumentException("Fichier illisible.")
+                    val copied=candidate
+                    runOnUiThread {
+                        if(isFinishing || isDestroyed) return@runOnUiThread
+                        toast("Copié dans le workspace : ${copied.name}. Demandez ensuite à l’agent de le traiter.")
+                        if(screen=="files") showFiles() else if(screen=="chat" && currentSession==id) showSessionFiles(id)
+                    }
+                } catch(e:Exception) {
+                    reserved?.delete()
+                    runOnUiThread { if(!isFinishing && !isDestroyed) toast(e.message ?: "Import impossible.") }
+                }
+            }.start()
+            return
         }
         if(request==302 && result==RESULT_OK && uri!=null) {
             val id=pickerSession ?: return
@@ -923,8 +1168,10 @@ class MainActivity : Activity() {
         val (_,body)=scrollArea(20); body.addView(gap(12)); body.addView(label("Paramètres",25f,strong,true)); body.addView(gap(8)); body.addView(label("Configurez votre assistant et votre espace de travail.",14f,muted)); body.addView(gap(22))
         body.addView(label("CONNEXION",11f,muted,true)); body.addView(gap(8))
         body.addView(settingCard("Moteur · NemApi","Connexion DeepSeek et paramètres intégrés à NEMESIS.") { startActivity(Intent(this, com.nemap.android.MainActivity::class.java)) }); body.addView(gap(10))
-        val ssh=SshBridge.details(); val desc=if(ssh.optBoolean("configured")) "${ssh.optString("user")}@${ssh.optString("host")} · connexion à vérifier" else "Configurer un serveur SSH ou Termux."
-        body.addView(settingCard("Environnement SSH",desc) { sshSettings() }); body.addView(gap(24)); body.addView(label("ESPACE DE TRAVAIL",11f,muted,true)); body.addView(gap(8))
+        body.addView(settingCard("Redémarrer le moteur DOM","Si le moteur ne répond plus après une longue session. Cookies et discussions conservés, aucun message renvoyé.") { restartDomEngine() }); body.addView(gap(10))
+        body.addView(settingCard("Connecteurs","Google Workspace pour Work · GitHub pour Code. Gérer les comptes, tester ou déconnecter.") { showConnectors() }); body.addView(gap(10))
+        val ssh=SshBridge.details(); val desc=if(ssh.optBoolean("configured")) "${ssh.optString("user")}@${ssh.optString("host")} · shell distant actif" else "Nécessaire pour Bash et SFTP dans Work/Code ; aucun Linux local n’est embarqué."
+        body.addView(settingCard("Shell distant · SSH",desc) { sshSettings() }); body.addView(gap(24)); body.addView(label("ESPACE DE TRAVAIL",11f,muted,true)); body.addView(gap(8))
         body.addView(settingCard("Fichiers locaux","Consulter les fichiers Work et Code par discussion.") { showFiles() }); body.addView(gap(18))
         val setting = LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(12)); background=shape(white,16,line) }
         val labels = column().apply { addView(label("Détails des outils",15f,strong,true)); addView(gap(4)); addView(label("Déplier automatiquement les paramètres et résultats.",13f,muted)) }
@@ -942,6 +1189,16 @@ class MainActivity : Activity() {
         body.addView(settingCard("Skills", "Consulter les skills et leurs instructions.") { showSkills() }); body.addView(gap(8))
         body.addView(settingCard("Serveurs MCP", "Ajouter et tester des serveurs HTTP ou SSH.") { showMcpServers() })
         body.addView(gap(20)); body.addView(label("NEMESIS Android · version de développement",12f,muted))
+    }
+    private fun restartDomEngine() {
+        val detail = com.nemap.android.core.DomHealth.summary()
+        sheet("Redémarrer le moteur DOM ?", "Le navigateur intégré sera reconstruit. Les données, cookies et discussions sont conservés ; aucun message ne sera renvoyé automatiquement. État : $detail") { body, dialog ->
+            body.addView(action("Redémarrer", primary, white) {
+                com.nemap.android.EmbeddedRuntime.restartDom()
+                dialog.dismiss(); toast("Moteur DOM redémarré")
+            }); body.addView(gap(8))
+            body.addView(action("Annuler", Color.TRANSPARENT, muted) { dialog.dismiss() })
+        }
     }
     private fun settingCard(title:String, description:String,click:()->Unit):View=column().apply {
         setPadding(dp(16),dp(16),dp(16),dp(16)); background=shape(white,16,line); isClickable=true; isFocusable=true
@@ -999,14 +1256,28 @@ class MainActivity : Activity() {
     }
     private fun sshSettings() {
         val old=SshBridge.details()
-        sheet("Environnement SSH", "La clé du serveur est mémorisée à la première connexion. Un réseau compromis à cette étape peut usurper le serveur. Le mot de passe est chiffré avec Android Keystore.") { body, dialog ->
-            val host=formField("Hôte SSH",old.optString("host","")); body.addView(host); body.addView(gap(8))
+        sheet("Environnement SSH", "Hôte DNS/IP, hôte:port, utilisateur@hôte ou URL ssh://utilisateur@hôte:port. Une machine hors réseau local fonctionne si son SSH est joignable (DNS public/VPN/port ouvert). L’empreinte est mémorisée à la première connexion. GitHub Codespaces nécessite son tunnel GitHub + clé/agent SSH : ce connecteur direct par mot de passe ne peut pas joindre un Codespace à lui seul.") { body, dialog ->
+            val host=formField("Hôte ou URL SSH",old.optString("host","")); body.addView(host); body.addView(gap(8))
             val port=formField("Port",old.optInt("port",22).toString()); body.addView(port); body.addView(gap(8))
             val user=formField("Utilisateur",old.optString("user","")); body.addView(user); body.addView(gap(8))
             val password=formField("Mot de passe SSH",secret=true); body.addView(password); body.addView(gap(14))
             body.addView(action("Enregistrer",primary,white) {
                 try { SshBridge.save(host.text.toString(),port.text.toString().toInt(),user.text.toString(),"",password.text.toString()); dialog.dismiss(); toast("SSH enregistré"); showSettings() } catch(e:Exception) { toast(e.message?:"Configuration invalide") }
             }); body.addView(gap(8))
+            if(old.optBoolean("configured")) {
+                body.addView(action("Tester la connexion",pale,primary) {
+                    toast("Test SSH en cours…")
+                    Thread {
+                        val result=try { JSONObject(SshBridge.testConnection()) } catch(e:Exception) { JSONObject().put("success",false).put("error",e.message ?: "Erreur") }
+                        runOnUiThread {
+                            if(!isFinishing && !isDestroyed) {
+                                if(result.optBoolean("success")) toast("SSH joignable : ${result.optString("user")}@${result.optString("host")}:${result.optInt("port")} · ${result.optString("fingerprint")}")
+                                else toast(result.optString("error","Connexion impossible"))
+                            }
+                        }
+                    }.start()
+                }); body.addView(gap(8))
+            }
             body.addView(action("Effacer la configuration",Color.TRANSPARENT,danger) { SshBridge.clear(); dialog.dismiss(); showSettings() })
         }
     }
