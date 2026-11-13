@@ -2,7 +2,7 @@
 
 NEMESIS est une application Android native qui réunit, dans une seule APK, une interface de conversation et une adaptation du moteur d’agent Python de NEMESIS-AGENT, reliées à une copie intégrée de NemApi-Apk. Le seul fournisseur intégré actuellement est **DeepSeek** : l’utilisateur doit s’y connecter dans l’application. L’API locale ne rend pas le modèle autonome ni utilisable hors ligne.
 
-> **Préversion : v0.1.0-beta.9.** Cette préversion est préparée pour une publication directe depuis GitHub, pas pour Google Play. Les fonctions Google Workspace et GitHub restent expérimentales tant qu’elles n’ont pas été validées avec un compte réel. Elle comprend les correctifs DOM locaux, les connecteurs avec un vrai contrôle d’accès Drive/GitHub, et aucun PRoot embarqué. Les appels OAuth/Workspace/GitHub authentifiés n’ont pas pu être testés avec un compte utilisateur dans cette session.
+> **Préversion : v0.1.0-beta.9.** Cette préversion est publiée pour installation directe depuis GitHub, pas pour Google Play. Les fonctions Google Workspace et GitHub restent expérimentales tant qu’elles n’ont pas été validées avec un compte réel. Elle comprend les correctifs DOM locaux, les connecteurs avec un vrai contrôle d’accès Drive/GitHub, et aucun PRoot embarqué. Les appels OAuth/Workspace/GitHub authentifiés n’ont pas pu être testés avec un compte utilisateur dans cette session.
 
 ## Installation
 

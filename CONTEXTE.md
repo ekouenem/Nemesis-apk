@@ -2,9 +2,9 @@
 
 État au 13 novembre 2026. Ce document décrit la validation beta.9; vérifier Git et la release avant toute action. Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
 
-## Préparation de la version beta.9
+## Version publiée
 
-- Release beta.9 en préparation; aucun tag/release publié à ce stade. APK candidate locale : `NEMESIS-v0.1.0-beta.9.apk` ; SHA-256 : `f04b43f3539cdd70c6f632b807a4b26922f05b4fdd40e4052436fa60ddec4a94`. Cette candidate est signée avec la clé de développement, non une clé de production.
+- Release : **[v0.1.0-beta.9](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.9)** ; APK : `NEMESIS-v0.1.0-beta.9.apk` ; SHA-256 : `f04b43f3539cdd70c6f632b807a4b26922f05b4fdd40e4052436fa60ddec4a94` (identique au digest de l’asset GitHub). L’APK est signée avec la clé de développement, non une clé de production.
 - `versionCode 10`, `versionName 0.1.0-beta.9`, `minSdk 26`, quatre ABIs Chaquopy (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). L’APK release est signée avec le même certificat de développement que beta.8 (`ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`) pour les mises à jour par-dessus; ce n’est pas une clé de production.
 - `targetSdk 28` est conservé temporairement pour la compatibilité avec `/sdcard/Nemesis`; la release est un sideload GitHub, **pas une soumission Google Play**. La seule règle lint désactivée est `ExpiredTargetSdkVersion`; une future soumission Play exige migration stockage/target SDK.
 - Dépôt `ekouenem/Nemesis-apk`, branche `main`, Codespace `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, chemin `/workspaces/Nemesis-apk`. Le dépôt NemApi-Apk d’origine ne doit pas être utilisé pour pousser cette application.
@@ -34,7 +34,7 @@
 
 ## Publication
 
-L’utilisateur a explicitement autorisé commit, push et nouvelle release beta.9. Publication pas encore effectuée au moment de cette préparation. Après push, créer le tag/release beta.9 et vérifier que l’asset GitHub correspond au SHA-256 ci-dessus. Aucun secret ou keystore ne doit être dans le commit.
+L’utilisateur a explicitement autorisé commit, push et nouvelle release beta.9. Publiée en préversion GitHub; le tag pointe sur `4e626cf070a79fc13e34952df5c831ba9994582a` et l’asset a été vérifié avec le SHA-256 ci-dessus. Aucun secret ou keystore n’est dans le commit.
 
 ## Historique — itération UI noVNC et streaming (antérieure à la validation beta.9)
 
