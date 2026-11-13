@@ -1,6 +1,6 @@
 # Contexte de reprise — NEMESIS Android
 
-État au 13 novembre 2026. Ce document décrit la validation beta.9; vérifier Git et la release avant toute action. Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
+État au 13 novembre 2026. Session beta.9 clôturée : code poussé, release publiée et asset vérifié. Le compte rendu final est dans [SESSION-BETA9-FINAL.md](SESSION-BETA9-FINAL.md). Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
 
 ## Version publiée
 
@@ -34,7 +34,7 @@
 
 ## Publication
 
-L’utilisateur a explicitement autorisé commit, push et nouvelle release beta.9. Publiée en préversion GitHub; le tag pointe sur `4e626cf070a79fc13e34952df5c831ba9994582a` et l’asset a été vérifié avec le SHA-256 ci-dessus. Aucun secret ou keystore n’est dans le commit.
+L’utilisateur a explicitement autorisé commit, push et release beta.9. Publiée en préversion GitHub; le tag pointe sur `4e626cf070a79fc13e34952df5c831ba9994582a` et l’asset a été vérifié avec le SHA-256 ci-dessus. Le compte rendu final est dans `SESSION-BETA9-FINAL.md`. Le commit de code et le commit documentaire sont poussés; aucun secret ou keystore n’est dans le dépôt.
 
 ## Historique — itération UI noVNC et streaming (antérieure à la validation beta.9)
 
