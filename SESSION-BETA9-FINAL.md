@@ -1,8 +1,8 @@
 # Bilan final — session NEMESIS Android beta.9
 
-**Date :** 13 novembre 2026  
-**Dépôt :** [`ekouenem/Nemesis-apk`](https://github.com/ekouenem/Nemesis-apk), branche `main`  
-**Codespace :** `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, `/workspaces/Nemesis-apk`  
+**Date :** 13 novembre 2026
+**Dépôt :** [`ekouenem/Nemesis-apk`](https://github.com/ekouenem/Nemesis-apk), branche `main`
+**Codespace :** `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, `/workspaces/Nemesis-apk`
 **État :** session finalisée; code poussé et préversion publiée.
 
 ## Release
