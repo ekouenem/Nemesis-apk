@@ -1,15 +1,16 @@
 # Contexte de reprise — NEMESIS Android
 
-État au 13 novembre 2026. La beta.9 est l’ancienne release publique. Le travail de v1.0.0 est préparé dans `/workspaces/Nemesis-apk`; aucun commit, push, tag ou release v1.0.0 n’a encore été créé. Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
+État au 13 novembre 2026. NEMESIS Android **v1.0.0 est publiée** sur GitHub. La beta.9 est l’ancienne release. Aucun secret, token, cookie ou keystore privé ne doit être ajouté au dépôt.
 
-## Préparation v1.0.0
+## Release v1.0.0
 
-- `versionCode 11`, `versionName 1.0.0`; APK release construite, signée avec la clé de développement existante (même certificat beta.9), non une clé de production.
-- Artefact : `app/build/outputs/apk/release/app-release.apk`, 40 Mio, SHA-256 `e104d1eeb4d8c2b42c8df1fd200674e0bd6e6dd1c184f01e80ba327857c3cd44`; APK vérifiée par `apksigner`, version/appId et empreinte conformes.
-- Build `assembleDebug`, `assembleDebugAndroidTest`, `assembleRelease` réussi. 73 tests Python, tests JS et tests unitaires NemApi réussis; `git diff --check` propre.
+- Release GitHub : [v1.0.0](https://github.com/ekouenem/Nemesis-apk/releases/tag/v1.0.0), APK `NEMESIS-v1.0.0.apk` (41 301 638 octets). SHA-256 vérifié sur l’APK téléchargée depuis GitHub : `e104d1eeb4d8c2b42c8df1fd200674e0bd6e6dd1c184f01e80ba327857c3cd44`.
+- Tag `v1.0.0` et commit de release `609c3899608c3926af7ad407d63f993db457d469`; branche `main` et `feature/proot-android-smoke` poussées sur `ekouenem/Nemesis-apk`.
+- `versionCode 11`, `versionName 1.0.0`, `minSdk 26`, `targetSdk 28`, application `com.nemesis.apk`. Certificat Android Debug SHA-256 `ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`, identique à beta.9 pour la mise à jour; ce n’est pas une clé de production.
+- `assembleDebug`, `assembleDebugAndroidTest`, `assembleRelease` réussis. 73 tests Python, tests JS DOM/flux/pièces jointes et tests unitaires NemApi réussis; `git diff --check` propre.
 - TokenHarbor uniquement vérifié par tests synthétiques; aucun chat réel validé. PRoot inclus mais smoke test Alpine précédent arrêté sur un refus de permission pendant `apk add`. Tests instrumentés non lancés sur l’émulateur de travail pour préserver ses données.
 - Google OAuth non validé en réel. Le connecteur GitHub n’est pas inclus; les identifiants GitHub historiques sont effacés par l’initialisation, sans suppression volontaire des autres données.
-- Les sources PRoot/talloc/libandroid-shmem et leurs notices sont conservées sous `third_party/`; clés et credentials restent hors Git. Préserver `/home/user/uploads/credentials.txt`.
+- Les sources PRoot/talloc/libandroid-shmem et leurs notices sont conservées sous `third_party/`; credentials et clé de signature restent hors Git. Préserver `/home/user/uploads/credentials.txt`.
 
 ## Version antérieure — beta.9
 
