@@ -8,6 +8,9 @@ import tarfile
 import ssl
 import certifi
 import threading
+import traceback
+import socket
+import ipaddress
 import urllib.request
 from pathlib import Path
 
@@ -48,6 +51,21 @@ _FILES_DIR = ""
 _NATIVE_LIB_DIR = ""
 _ANDROID_ABI = ""
 _DNS_SERVERS = ""
+_INSTALL_PROGRESS = {}
+_INSTALL_PROGRESS_LOCK = threading.RLock()
+
+
+def _set_install_progress(distro, phase, percent, detail="", **extra):
+    state={"success":phase != "error", "id":distro, "phase":phase,
+           "percent":max(0,min(100,int(percent))), "detail":str(detail)[:300], **extra}
+    with _INSTALL_PROGRESS_LOCK: _INSTALL_PROGRESS[distro]=state
+
+
+def installation_progress(distro):
+    key=str(distro or "").strip().lower()
+    with _INSTALL_PROGRESS_LOCK:
+        state=dict(_INSTALL_PROGRESS.get(key,{"success":True,"id":key,"phase":"idle","percent":0,"detail":""}))
+    return _data(state)
 
 
 def _data(value):
@@ -114,12 +132,12 @@ def _installed_size_cached(path, version):
 
 
 def _toolchain_ready(path):
-    try: return (Path(path) / ".nemesis-toolchain-v1").read_text(encoding="ascii").strip() == "1"
+    try: return (Path(path) / ".nemesis-toolchain-v2").read_text(encoding="ascii").strip() == "2"
     except OSError: return False
 
 
 def _mark_toolchain_ready(path):
-    (Path(path) / ".nemesis-toolchain-v1").write_text("1\n", encoding="ascii")
+    (Path(path) / ".nemesis-toolchain-v2").write_text("2\n", encoding="ascii")
     marker = Path(path) / ".nemesis-rootfs-ready"
     try:
         version = marker.read_text(encoding="utf-8").strip().split()[0]
@@ -156,7 +174,7 @@ def _archive_url(distro, spec, arch):
     return "https://github.com/termux/proot-distro/releases/download/v4.26.0/" + filename, filename
 
 
-def _extract_archive(archive, destination, strip_components=0, mode="r:*"):
+def _extract_archive(archive, destination, strip_components=0, mode="r:*", progress=None):
     destination.mkdir(parents=True, exist_ok=False)
     root = os.path.realpath(str(destination))
     with tarfile.open(str(archive), mode) as tf:
@@ -182,7 +200,8 @@ def _extract_archive(archive, destination, strip_components=0, mode="r:*"):
             safe.append((member, relative, path))
             by_relative[relative] = (member, path)
         directories, symlinks, hardlinks = [], [], []
-        for member, relative, path in safe:
+        progress_step=max(1,len(safe)//25)
+        for index,(member, relative, path) in enumerate(safe,1):
             member.uid = member.gid = None
             if member.isdir():
                 os.makedirs(path, exist_ok=True)
@@ -200,6 +219,8 @@ def _extract_archive(archive, destination, strip_components=0, mode="r:*"):
                 hardlinks.append((path, member.linkname))
             # Device nodes and FIFOs are intentionally omitted. Android's /dev
             # nodes are bind-mounted when the guest runs.
+            if progress and (index % progress_step == 0 or index == len(safe)):
+                progress(index,len(safe))
         for path, linkname in hardlinks:
             raw_parts = [part for part in linkname.split("/") if part not in ("", ".")]
             if linkname.startswith("/") or any(part == ".." for part in raw_parts):
@@ -235,8 +256,27 @@ def _extract_archive(archive, destination, strip_components=0, mode="r:*"):
             os.chmod(path, permissions)
 
 
-def _bootstrap_tools(distro, guest):
-    """Install the small development toolchain before a rootfs is marked ready."""
+def _prime_debian_mirror_hosts(guest):
+    """Pin current mirror IPv4s resolved by Android into the PRoot guest's hosts file."""
+    entries=[]
+    for host in ("deb.debian.org", "security.debian.org"):
+        try:
+            results=socket.getaddrinfo(host,80,socket.AF_INET,socket.SOCK_STREAM)
+        except OSError:
+            continue
+        for result in results:
+            try: address=str(ipaddress.IPv4Address(result[4][0]))
+            except (IndexError,ValueError): continue
+            line=address+" "+host
+            if line not in entries: entries.append(line)
+    if entries:
+        with (Path(guest)/"etc/hosts").open("a",encoding="ascii") as stream:
+            stream.write("\n"+"\n".join(entries)+"\n")
+    return entries
+
+
+def _bootstrap_tools(distro, guest, progress=None):
+    """Install a usable toolchain and the app-managed nemesis account in a rootfs."""
     data_dir = Path(_FILES_DIR) / "nemesis-linux"
     native_dir = Path(_NATIVE_LIB_DIR)
     libs = data_dir / "libs"
@@ -258,87 +298,130 @@ def _bootstrap_tools(distro, guest):
     env.update({"PROOT_LOADER": str(libs / "proot-loader"), "PROOT_TMP_DIR": str(tmp), "PROOT_NO_SECCOMP": "1",
                 "LD_LIBRARY_PATH": str(libs) + ":" + str(native_dir), "TMPDIR": str(tmp),
                 "HOME": "/root", "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "DEBIAN_FRONTEND": "noninteractive"})
+                "HOSTNAME": "nemesis", "DEBIAN_FRONTEND": "noninteractive"})
     if distro == "alpine":
-        command = "apk update && apk add --no-cache bash ca-certificates curl git python3 py3-pip py3-virtualenv nodejs npm openssh-client-default zip unzip coreutils findutils grep sed tar && rm -rf /var/cache/apk/*"
+        create_user="(id nemesis >/dev/null 2>&1 || adduser -D -s /bin/sh -h /home nemesis)"
     elif distro == "debian":
-        command = "apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl git python3 python3-pip python3-venv nodejs npm openssh-client zip unzip coreutils findutils grep sed tar && apt-get clean && rm -rf /var/lib/apt/lists/*"
+        create_user="(id nemesis >/dev/null 2>&1 || useradd -m -s /bin/sh nemesis)"
     else:
         raise ValueError("Distribution non prise en charge")
+    identity=(create_user + " && printf 'nemesis:nemesis123\\n' | chpasswd && mkdir -p /etc/sudoers.d /home/nemesis && "
+              "printf 'nemesis ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/90-nemesis && chmod 0440 /etc/sudoers.d/90-nemesis && "
+              "printf 'nemesis\\n' > /etc/hostname && "
+              "(grep -Fq nemesis /etc/hosts || printf '127.0.0.1 localhost nemesis\\n' >> /etc/hosts) && "
+              "(grep -Fq '@includedir /etc/sudoers.d' /etc/sudoers || printf '\\n@includedir /etc/sudoers.d\\n' >> /etc/sudoers) && chmod 0440 /etc/sudoers && "
+              "visudo -c >/dev/null")
+    if distro == "alpine":
+        command = ("apk update && apk add --no-cache bash ca-certificates curl git python3 py3-pip py3-virtualenv nodejs npm openssh-client-default "
+                   "sudo shadow coreutils findutils grep sed tar && " + identity + " && rm -rf /var/cache/apk/*")
+    elif distro == "debian":
+        apt_opts="-o APT::Sandbox::User=root -o Acquire::Retries=3"
+        command = ("apt-get " + apt_opts + " update && apt-get " + apt_opts + " install -y --no-install-recommends bash ca-certificates curl git python3 python3-pip python3-venv nodejs npm "
+                   "openssh-client sudo passwd zip unzip coreutils findutils grep sed tar && " + identity + " && apt-get " + apt_opts + " clean && rm -rf /var/lib/apt/lists/*")
+    else:
+        raise ValueError("Distribution non prise en charge")
+    if distro == "debian":
+        _prime_debian_mirror_hosts(guest)
+    if progress: progress("packages",76,"Installation des paquets et configuration de l’utilisateur nemesis…")
     args = [str(libs / "libproot.so"), "-0", "-r", str(guest),
             "-b", "/dev/null", "-b", "/dev/zero", "-b", "/dev/urandom", "-b", "/dev/random",
             "-b", "/proc", "-b", "/sys", "-w", "/root", "/bin/sh", "-c", command]
     completed = subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               timeout=900, check=False)
+                               timeout=1800, check=False)
     output = completed.stdout.decode("utf-8", "replace")
     if completed.returncode != 0:
-        tail = output[-1200:]
-        raise RuntimeError("Installation des outils de base échouée (code %d): %s" % (completed.returncode, tail))
-    verify = subprocess.run(args[:-3] + ["/bin/sh", "-c", "command -v git python3 node npm"], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False)
+        tail = output[-4000:]
+        raise RuntimeError("Installation/configuration des paquets échouée (code %d):\n%s" % (completed.returncode, tail))
+    verify_command=("command -v git python3 node npm sudo >/dev/null && "
+                    "grep -qx nemesis /etc/hostname && id nemesis && "
+                    "printf 'nemesis123\\n' | su -s /bin/sh -c 'sudo -S -p NEMESIS_PROMPT id -un' nemesis")
+    verify = subprocess.run(args[:-3] + ["/bin/sh", "-c", verify_command], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
     if verify.returncode != 0:
-        raise RuntimeError("Vérification post-installation incomplète: " + verify.stdout.decode("utf-8", "replace")[-400:])
+        raise RuntimeError("Vérification post-installation (outils/hostname/compte/sudo) échouée (code %d):\n%s" %
+                           (verify.returncode, verify.stdout.decode("utf-8", "replace")[-2500:]))
+    if progress: progress("verify",96,"Outils, hostname nemesis et accès sudo vérifiés.")
 
 
 def install(distro):
+    distro=str(distro or "").strip().lower()
+    _set_install_progress(distro,"starting",1,"Vérification de l’architecture et de l’espace…")
     try:
         distro, spec, (arch, checksum) = _spec(distro)
         base = Path(_FILES_DIR) / "nemesis-linux"
         base.mkdir(parents=True, exist_ok=True)
         target = _target_path(distro)
         if _is_ready(target, spec["version"]):
-            if _toolchain_ready(target): return status(distro)
+            if _toolchain_ready(target):
+                _set_install_progress(distro,"complete",100,"Environnement déjà installé et vérifié.")
+                return status(distro)
+            _set_install_progress(distro,"packages",72,"Mise à niveau des outils et configuration de nemesis…")
             with _ROOTFS_LOCK:
                 if not _toolchain_ready(target):
-                    _bootstrap_tools(distro, target)
+                    _bootstrap_tools(distro,target,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
                     _mark_toolchain_ready(target)
-            result=json.loads(status(distro));result["tools_updated"]=True;return _data(result)
+            result=json.loads(status(distro));result["tools_updated"]=True
+            _set_install_progress(distro,"complete",100,"Outils et compte nemesis configurés.")
+            return _data(result)
         if target.exists() or target.is_symlink():
-            raise ValueError("Installation existante incomplète; fichiers conservés")
+            raise ValueError("Installation existante incomplète; fichiers conservés. Supprimez cette distribution puis réessayez.")
         url, filename = _archive_url(distro, spec, arch)
         partial = base / (filename + ".part")
         staging = base / (spec["root"] + "-" + arch + ".installing")
         archive_bytes = 0
-        request = urllib.request.Request(url, headers={"User-Agent": "NEMESIS-Android/PRoot"})
+        request = urllib.request.Request(url, headers={"User-Agent": "NEMESIS-Android/PRoot", "Accept-Encoding":"identity"})
         with _ROOTFS_LOCK:
             if _is_ready(target, spec["version"]):
+                _set_install_progress(distro,"complete",100,"Environnement déjà installé et vérifié.")
                 return status(distro)
-            if staging.exists():
-                shutil.rmtree(staging)
+            if staging.exists(): shutil.rmtree(staging)
             try:
-                with urllib.request.urlopen(request, timeout=120, context=ssl.create_default_context(cafile=certifi.where())) as response, open(partial, "wb") as output:
-                    shutil.copyfileobj(response, output)
-                archive_bytes = partial.stat().st_size
-                actual_hash = _sha256(partial)
-                if actual_hash != checksum:
-                    raise ValueError("Vérification SHA-256 échouée; installation annulée")
-                _extract_archive(partial, staging, spec["strip"], spec["mode"])
-                _bootstrap_tools(distro, staging)
-                _mark_toolchain_ready(staging)
-                shell = staging / "bin/sh"
-                if not (shell.is_file() or shell.is_symlink()) or not (staging / "etc").is_dir():
-                    raise ValueError("Le rootfs téléchargé n'a pas la structure attendue")
-                actual_size = _installed_size(staging)
-                (staging / ".nemesis-rootfs-ready").write_text("%s %d\n" % (spec["version"], actual_size), encoding="utf-8")
-                os.replace(staging, target)
+                _set_install_progress(distro,"download",3,"Connexion à la source officielle…",downloaded_bytes=0,total_bytes=0)
+                with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context(cafile=certifi.where())) as response:
+                    total=int(response.headers.get("Content-Length") or 0)
+                    downloaded=0
+                    with open(partial,"wb") as output:
+                        while True:
+                            chunk=response.read(256*1024)
+                            if not chunk: break
+                            output.write(chunk);downloaded+=len(chunk)
+                            percent=3+int(45*downloaded/total) if total>0 else min(48,3+downloaded//(512*1024))
+                            _set_install_progress(distro,"download",percent,"Téléchargement %.1f / %s Mo" %
+                                (downloaded/1_000_000,"%.1f"%(total/1_000_000) if total>0 else "?"),
+                                downloaded_bytes=downloaded,total_bytes=total)
+                archive_bytes=partial.stat().st_size
+                _set_install_progress(distro,"verify",51,"Vérification SHA-256…",downloaded_bytes=archive_bytes,total_bytes=archive_bytes)
+                actual_hash=_sha256(partial)
+                if actual_hash!=checksum: raise ValueError("Vérification SHA-256 échouée; archive téléchargée refusée.")
+                def extraction_progress(done,total):
+                    percent=54+int(19*done/max(1,total))
+                    _set_install_progress(distro,"extract",percent,"Extraction sécurisée : %d / %d entrées"%(done,total))
+                _set_install_progress(distro,"extract",53,"Extraction sécurisée du rootfs…")
+                _extract_archive(partial,staging,spec["strip"],spec["mode"],extraction_progress)
+                _bootstrap_tools(distro,staging,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
+                shell=staging/"bin/sh"
+                if not (shell.is_file() or shell.is_symlink()) or not (staging/"etc").is_dir():
+                    raise ValueError("Rootfs invalide après extraction : /bin/sh ou /etc absent.")
+                actual_size=_installed_size(staging)
+                (staging/".nemesis-rootfs-ready").write_text("%s %d\n"%(spec["version"],actual_size),encoding="utf-8")
+                _set_install_progress(distro,"finalize",98,"Vérification finale et activation…")
+                os.replace(staging,target)
             finally:
-                for path in (partial, staging):
+                for path in (partial,staging):
                     try:
-                        if path.is_dir() and not path.is_symlink():
-                            shutil.rmtree(path)
-                        else:
-                            path.unlink()
-                    except FileNotFoundError:
-                        pass
-        result = json.loads(status(distro))
-        result.update({"installed": True, "downloaded_bytes": archive_bytes,
-                       "actual_installed_bytes": _installed_size_cached(target, spec["version"])})
+                        if path.is_dir() and not path.is_symlink(): shutil.rmtree(path)
+                        else: path.unlink()
+                    except FileNotFoundError: pass
+        result=json.loads(status(distro))
+        result.update({"installed":True,"downloaded_bytes":archive_bytes,
+                       "actual_installed_bytes":_installed_size_cached(target,spec["version"])})
+        _set_install_progress(distro,"complete",100,"Installation et vérification terminées.")
         return _data(result)
     except Exception as exc:
-        message = str(exc)
-        if len(message) > 600:
-            message = "…" + message[-599:]
-        return _data({"success": False, "installed": False, "error": message})
+        trace=traceback.format_exc()
+        message=(str(exc)+"\n\nDiagnostic complet :\n"+trace[-7000:])[:9000]
+        _set_install_progress(distro,"error",100,"Échec : "+str(exc)[:250],error=message)
+        return _data({"success":False,"installed":False,"error":message})
 
 
 def remove(distro):

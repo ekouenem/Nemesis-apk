@@ -11,6 +11,62 @@ class MobileTests(unittest.TestCase):
         self.assertNotEqual(a, b); self.assertEqual(len(json.loads(m.list_sessions())), 2)
         self.assertEqual(json.loads(m.get_session(a))['mode'], 'work')
         m.configure(self.temp.name); self.assertEqual(len(json.loads(m.list_sessions())), 2)
+    def test_project_session_uses_private_workspace_and_can_be_deleted_with_project(self):
+        import os
+        unrelated=json.loads(m.create_session('work'))['id']
+        project=json.loads(m.project_create('Projet émulateur','work','Consigne du projet'))
+        self.assertEqual(project['mode'],'code')
+        self.assertTrue(project['ok'],project)
+        pid=project['id']
+        root=Path(m.project_root(pid))
+        self.assertTrue(root.is_dir())
+        self.assertEqual(root.parent,Path(self.temp.name).resolve()/'project-workspaces')
+        created=json.loads(m.create_session('code',pid))
+        self.assertTrue(created['ok'],created)
+        sid=created['id']
+        details=json.loads(m.get_session(sid))
+        self.assertEqual(details['project_id'],pid)
+        self.assertEqual(Path(m.workspace_root(sid)),root)
+        self.assertEqual(m.project_context(sid)['name'],'Projet émulateur')
+        self.assertTrue(json.loads(m.rename_session(sid,'Discussion du projet'))['ok'])
+        self.assertTrue(json.loads(m.pin_session(sid,True))['ok'])
+        result=json.loads(m.project_delete(pid))
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['deleted_sessions'],1)
+        self.assertFalse(root.exists())
+        sessions={row['id'] for row in json.loads(m.list_sessions())}
+        self.assertIn(unrelated,sessions)
+        self.assertNotIn(sid,sessions)
+        self.assertFalse(json.loads(m.project_get(pid))['ok'])
+
+
+    def test_legacy_project_sessions_migrate_to_code(self):
+        project=json.loads(m.project_create('Projet historique','code',''))
+        pid=project['id'];sid=json.loads(m.create_session('code',pid))['id']
+        with m._db() as db:
+            db.execute("UPDATE projects SET mode='work' WHERE id=?",(pid,))
+            db.execute("UPDATE sessions SET mode='work' WHERE id=?",(sid,))
+        m.configure(self.temp.name)
+        self.assertEqual(json.loads(m.project_get(pid))['project']['mode'],'code')
+        self.assertEqual(json.loads(m.get_session(sid))['mode'],'code')
+
+    def test_project_creation_and_agent_prompt_defaults(self):
+        project=json.loads(m.project_create('Toujours Code'))
+        self.assertTrue(project['ok'])
+        self.assertEqual(project['mode'],'code')
+        self.assertIn('NEMESIS Agent',m._system_prompt('work'))
+        self.assertNotIn('NEMESIS Work',m._system_prompt('work'))
+
+    def test_project_system_context_uses_nemesis_identity_only_for_local_proot(self):
+        project=json.loads(m.project_create('Compte local','code',''))
+        sid=json.loads(m.create_session('code',project['id']))['id']
+        with m._db() as db: db.execute("INSERT OR REPLACE INTO preferences(key,value) VALUES('execution_environment','alpine')")
+        prompt=m._system_prompt('code',sid)
+        self.assertIn('nom d’hôte du rootfs NEMESIS est `nemesis`',prompt)
+        self.assertIn('mot de passe par défaut',prompt)
+        self.assertIn('nemesis123',prompt)
+        self.assertIn('ne doit jamais être envoyé à un hôte SSH',prompt)
+
     def test_startup_removes_only_the_untouched_preview_and_preserves_user_sessions(self):
         import time, uuid
         user_id=json.loads(m.create_session('work'))['id']
@@ -469,5 +525,44 @@ class MobileTests(unittest.TestCase):
         self.assertFalse(json.loads(m.rate_message('other',answer['id'],-1))['ok'])
         self.assertFalse(json.loads(m.rate_message(sid,messages[0]['id'],1))['ok'])
         self.assertFalse(json.loads(m.rate_message(sid,answer['id'],3))['ok'])
+
+
+    def test_proot_bootstrap_uses_supported_user_creation_and_reports_progress(self):
+        import os, tempfile, subprocess
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        for distro in ('alpine','debian'):
+            with self.subTest(distro=distro), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); files=root/'files'; native=root/'native'; guest=root/'guest'
+                (guest/'etc').mkdir(parents=True); native.mkdir()
+                for name in ('libproot.so','libproot-loader.so','libtalloc.so','libandroid-shmem.so'):
+                    (native/name).write_bytes(b'x')
+                calls=[]; phases=[]
+                def run(args,**kwargs):
+                    calls.append(args)
+                    return subprocess.CompletedProcess(args,0,b'')
+                with patch.object(runtime,'_FILES_DIR',str(files)), \
+                     patch.object(runtime,'_NATIVE_LIB_DIR',str(native)), \
+                     patch.object(runtime,'_DNS_SERVERS',''), \
+                     patch.object(runtime.socket,'getaddrinfo',side_effect=lambda host,*a,**k:[(runtime.socket.AF_INET,runtime.socket.SOCK_STREAM,6,'',('203.0.113.8',80))]), \
+                     patch.object(runtime.subprocess,'run',side_effect=run):
+                    runtime._bootstrap_tools(distro,guest,lambda phase,percent,detail:phases.append((phase,percent)))
+                command=calls[0][-1]
+                self.assertIn('sudo -S',calls[1][-1])
+                if distro=='alpine':
+                    self.assertIn('adduser -D -s /bin/sh -h /home nemesis',command)
+                    self.assertNotIn(' zip ',command)
+                    self.assertNotIn(' unzip ',command)
+                else:
+                    self.assertIn('useradd -m -s /bin/sh nemesis',command)
+                    self.assertNotIn('adduser -D',command)
+                    self.assertIn('APT::Sandbox::User=root',command)
+                self.assertIn('nemesis ALL=(ALL:ALL) ALL',command)
+                self.assertIn('chmod 0440 /etc/sudoers',command)
+                if distro=='debian':
+                    hosts=(guest/'etc/hosts').read_text()
+                    self.assertIn('203.0.113.8 deb.debian.org',hosts)
+                    self.assertIn('203.0.113.8 security.debian.org',hosts)
+                self.assertEqual(phases,[('packages',76),('verify',96)])
 
 if __name__ == '__main__': unittest.main()

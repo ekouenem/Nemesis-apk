@@ -52,6 +52,7 @@ class MainActivity : Activity() {
     private var newConversationMode = "work"
     private var workspaceUploadSession: String? = null
     private var projectUploadId: String? = null
+    private var currentProjectId: String? = null
     private val busy get() = JobRunner.busySession != null
     private val busySession get() = JobRunner.busySession
     private val pendingPreview get() = JobRunner.preview
@@ -356,43 +357,54 @@ class MainActivity : Activity() {
         return outer
     }
     private fun expandedSidebar():View {
-        val panel=column().apply { setBackgroundColor(sidebar); setPadding(dp(14),dp(14),dp(12),dp(12)) }
+        val panel=column().apply { setBackgroundColor(sidebar); setPadding(dp(12),dp(10),dp(10),dp(8)) }
         val brand=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
-        brand.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,10); clipToOutline=true },LinearLayout.LayoutParams(dp(38),dp(38)))
-        brand.addView(column().apply { setPadding(dp(9),0,0,0); addView(label("NEMESIS",14f,strong,true)); addView(label("Votre espace IA",10.5f,muted)) },LinearLayout.LayoutParams(0,-2,1f))
-        panel.addView(brand); panel.addView(gap(18))
-        panel.addView(action("＋  Nouvelle discussion",pale,primary){showHome("work")}.apply{gravity=Gravity.CENTER_VERTICAL or Gravity.START}); panel.addView(gap(8))
-        fun nav(icon:String,title:String,active:Boolean,click:()->Unit) {
-            panel.addView(action("$icon   $title",if(active)pale else Color.TRANSPARENT,if(active)primary else strong,click).apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START; textSize=14f })
-            panel.addView(gap(2))
+        brand.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,10); clipToOutline=true },LinearLayout.LayoutParams(dp(34),dp(34)))
+        brand.addView(column().apply { setPadding(dp(8),0,0,0); addView(label("NEMESIS",13f,strong,true)); addView(label("Votre espace IA",9.5f,muted)) },LinearLayout.LayoutParams(0,-2,1f))
+        panel.addView(brand); panel.addView(gap(7))
+        val search=EditText(this).apply { hint="Rechercher une discussion"; textSize=12f; setSingleLine(true); setTextColor(strong); setHintTextColor(muted); background=shape(white,11,line); setPadding(dp(10),0,dp(10),0); minHeight=dp(38); contentDescription="Rechercher une discussion" }
+        panel.addView(search); panel.addView(gap(5))
+        fun navCell(title:String,selected:Boolean,click:()->Unit):TextView = action(title,if(selected)pale else Color.TRANSPARENT,if(selected)primary else strong,click).apply {
+            textSize=10.5f; minHeight=dp(34); setPadding(dp(4),0,dp(4),0); gravity=Gravity.CENTER; maxLines=1; isAllCaps=false
         }
-        nav("◉","Agent",(screen=="home"&&newConversationMode!="code")||(screen=="chat"&&currentMode=="work")){showHome("work")}
-        nav("▦","Projets",screen=="projects"){showProjects()}
-        nav("⌘","Code",(screen=="home"&&newConversationMode=="code")||(screen=="chat"&&currentMode=="code")){showHome("code")}
-        nav("◷","Automatisations",screen=="automations"){showAutomations()}
-        nav("⛓","Connecteurs",screen=="connectors"){showConnectors()}
-        val search=EditText(this).apply { hint="Rechercher une discussion"; textSize=13f; setSingleLine(true); setTextColor(strong); setHintTextColor(muted); background=shape(white,12,line); setPadding(dp(11),0,dp(11),0); minHeight=dp(42) }
-        panel.addView(gap(8)); panel.addView(search); panel.addView(gap(12)); panel.addView(label("DISCUSSIONS",10.5f,muted,true)); panel.addView(gap(5))
+        fun navRow(entries:List<Triple<String,Boolean,()->Unit>>) {
+            val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
+            entries.forEachIndexed { index,entry ->
+                row.addView(navCell(entry.first,entry.second,entry.third),LinearLayout.LayoutParams(0,dp(34),1f))
+                if(index<entries.lastIndex) row.addView(View(this),LinearLayout.LayoutParams(dp(3),1))
+            }
+            panel.addView(row); panel.addView(gap(3))
+        }
+        navRow(listOf(Triple("Agent",(screen=="home"&&newConversationMode!="code")||(screen=="chat"&&currentMode=="work"),{showHome("work")} ),Triple("Code",(screen=="home"&&newConversationMode=="code")||(screen=="chat"&&currentMode=="code"),{showHome("code")} ),Triple("Projets",screen=="projects"||screen=="project",{showProjects()})))
+        navRow(listOf(Triple("Automatisations",screen=="automations",{showAutomations()}),Triple("Connecteurs",screen=="connectors",{showConnectors()})))
+        panel.addView(action("＋  Nouvelle discussion",pale,primary){create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=11.5f}); panel.addView(gap(4))
+        panel.addView(label("DISCUSSIONS",9.5f,muted,true)); panel.addView(gap(2))
         val list=column(); val listScroll=ScrollView(this).apply { isFillViewport=true; addView(list) }
         panel.addView(listScroll,LinearLayout.LayoutParams(-1,0,1f))
         fun refresh(query:String) {
             list.removeAllViews(); val sessions=JSONArray(try{py.callAttr("list_sessions").toString()}catch(_:Exception){"[]"}); var shown=0
             for(i in 0 until sessions.length()) {
-                val item=sessions.optJSONObject(i)?:continue; val title=item.optString("title"); if(!title.contains(query,true))continue; shown++
+                val item=sessions.optJSONObject(i)?:continue
+                if(item.optString("mode")!="work" || !item.isNull("project_id")) continue
+                val title=item.optString("title"); if(!title.contains(query,true))continue; shown++
                 val id=item.optString("id")
-                val row=column().apply { setPadding(dp(10),dp(8),dp(8),dp(8)); background=shape(if(id==currentSession)pale else Color.TRANSPARENT,11); isClickable=true; isFocusable=true
-                    addView(label(title,12.5f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END})
-                    addView(label((if(item.optInt("pinned")==1)"Épinglée · " else "")+modeName(item.optString("mode")),10.5f,muted))
-                    setOnClickListener{showChat(id)};setOnLongClickListener{sessionOptions(item);true}
+                val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; background=shape(if(id==currentSession)pale else Color.TRANSPARENT,9) }
+                val text=column().apply {
+                    setPadding(dp(7),dp(4),dp(2),dp(4))
+                    addView(label(title,11.5f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END})
+                    if(item.optInt("pinned")==1) addView(label("Épinglée",9f,muted))
+                    isClickable=true;isFocusable=true;setOnClickListener{showChat(id)}
+                    setOnLongClickListener{sessionOptions(item);true}
                 }
-                list.addView(row); list.addView(gap(2))
+                row.addView(text,LinearLayout.LayoutParams(0,-2,1f))
+                row.addView(action("⋯",Color.TRANSPARENT,muted){sessionOptions(item)}.apply{textSize=18f;contentDescription="Options de la discussion $title"},LinearLayout.LayoutParams(dp(36),dp(38)))
+                list.addView(row)
             }
-            if(shown==0)list.addView(label("Aucune discussion",12f,muted).apply{setPadding(dp(8),dp(10),0,0)})
+            if(shown==0)list.addView(label("Aucune discussion",10.5f,muted).apply{setPadding(dp(7),dp(8),0,0)})
         }
         refresh(""); search.addTextChangedListener(object:TextWatcher{override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){refresh(s?.toString()?:"")};override fun afterTextChanged(s:Editable?){}})
         panel.addView(separator())
-        panel.addView(action("▤   Fichiers",Color.TRANSPARENT,strong){showFiles()}.apply{gravity=Gravity.CENTER_VERTICAL or Gravity.START})
-        panel.addView(action("⚙   Paramètres",Color.TRANSPARENT,strong){showSettings()}.apply{gravity=Gravity.CENTER_VERTICAL or Gravity.START})
+        navRow(listOf(Triple("Fichiers",screen=="files",{showFiles()}),Triple("Paramètres",screen=="settings",{showSettings()})))
         return panel
     }
     private fun separator() = View(this).apply { setBackgroundColor(line); layoutParams = LinearLayout.LayoutParams(-1,dp(1)) }
@@ -414,153 +426,117 @@ class MainActivity : Activity() {
     }
     private fun showHome(initialMode:String="work") {
         screen = "home"; currentSession = null; newConversationMode = if(initialMode=="code") "code" else "work"
-        frame(); root.addView(topBar("NEMESIS", "Votre assistant personnel")); root.addView(separator())
+        val code=newConversationMode=="code"
+        frame(); root.addView(topBar(if(code)"NEMESIS CODE" else "NEMESIS", if(code)"Développement et projets" else "Votre assistant personnel")); root.addView(separator())
         val (_, body) = scrollArea(24)
         body.gravity = Gravity.CENTER_HORIZONTAL
-        body.addView(gap(30))
+        body.addView(gap(26))
         body.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType = ImageView.ScaleType.CENTER_CROP; background = shape(pale,20); clipToOutline = true; contentDescription = "Logo NEMESIS" }, LinearLayout.LayoutParams(dp(62),dp(62)))
+        body.addView(gap(20))
+        body.addView(label(if(code)"NEMESIS Code" else "Bonjour,", 27f,strong,true).apply { gravity=Gravity.CENTER })
+        body.addView(label(if(code)"Votre espace de développement" else "que souhaitez-vous accomplir ?", 20f,strong,true).apply { gravity=Gravity.CENTER })
+        body.addView(gap(10))
+        body.addView(label(if(code)"Explorez vos dépôts, utilisez le terminal et poursuivez vos projets." else "Un agent polyvalent pour vos recherches, fichiers et applications.", 14f,muted).apply { gravity=Gravity.CENTER })
         body.addView(gap(22))
-        body.addView(label("Bonjour,", 28f,strong,true).apply { gravity=Gravity.CENTER })
-        body.addView(label("que souhaitez-vous accomplir ?", 21f,strong,true).apply { gravity=Gravity.CENTER })
-        body.addView(gap(9))
-        body.addView(label("Un agent polyvalent pour vos recherches, fichiers et applications.", 14f,muted).apply { gravity=Gravity.CENTER })
-        body.addView(gap(28))
-        val detail=label("",14f,muted).apply { gravity=Gravity.CENTER; setPadding(dp(8),0,dp(8),0); minHeight=dp(44) }
-        val begin=action("Commencer en Work",primary,white) { create(newConversationMode) }.apply { contentDescription="Commencer une nouvelle discussion en Work" }
-        val selector=modeSelector { mode ->
-            val title=modeName(mode)
-            detail.text=when(mode) {
-                "chat" -> "Une conversation pour poser vos questions, apprendre et créer."
-                "code" -> "Un espace pour développer, explorer vos dépôts et utiliser SSH."
-                else -> "Recherche, rédaction, fichiers, applications et tâches du quotidien."
+        body.addView(action(if(code)"＋  Nouvelle discussion Code" else "＋  Nouvelle discussion",primary,white){create(if(code)"code" else "work")})
+        body.addView(gap(20))
+        if(code) {
+            body.addView(label("DISCUSSIONS CODE",11f,muted,true).apply{gravity=Gravity.START});body.addView(gap(6))
+            val sessions=JSONArray(try{py.callAttr("list_sessions").toString()}catch(_:Exception){"[]"});var shown=0
+            for(i in 0 until sessions.length()) {
+                val item=sessions.optJSONObject(i)?:continue
+                if(item.optString("mode")!="code" || !item.isNull("project_id")) continue
+                shown++
+                val id=item.optString("id");val title=item.optString("title")
+                val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=shape(white,12,line)}
+                row.addView(action(title,Color.TRANSPARENT,strong){showChat(id)}.apply{gravity=Gravity.CENTER_VERTICAL;maxLines=1;setOnLongClickListener{sessionOptions(item);true}},LinearLayout.LayoutParams(0,dp(50),1f))
+                row.addView(action("⋯",Color.TRANSPARENT,muted){sessionOptions(item)}.apply{contentDescription="Options de la discussion $title"},LinearLayout.LayoutParams(dp(44),dp(44)))
+                body.addView(row);body.addView(gap(5))
             }
-            begin.text="Commencer en $title"
-            begin.contentDescription="Commencer une nouvelle discussion en $title"
+            if(shown==0)body.addView(label("Vos discussions Code apparaîtront ici.",13f,muted).apply{gravity=Gravity.START})
+            body.addView(gap(12));body.addView(action("▦  Ouvrir les projets",pale,primary){showProjects()})
+        } else {
+            body.addView(label("Vos discussions précédentes restent accessibles dans le menu latéral.",12f,muted).apply { gravity=Gravity.CENTER })
         }
-        body.addView(selector,LinearLayout.LayoutParams(-1,dp(54)))
-        body.addView(gap(16)); body.addView(detail,LinearLayout.LayoutParams(-1,-2))
-        body.addView(gap(18)); body.addView(begin,LinearLayout.LayoutParams(-1,dp(54)))
-        body.addView(gap(18))
-        body.addView(label("Vos discussions précédentes restent accessibles dans le menu latéral.",12f,muted).apply { gravity=Gravity.CENTER })
-        root.addView(bottomNav(if(newConversationMode=="code") "code" else "agent"))
-    }
-    private fun modeSelector(onSelected:(String)->Unit):View {
-        val modes=listOf("work","code")
-        val captions=listOf("Agent","Code")
-        val outer=FrameLayout(this).apply { background=shape(sidebar,18,line); clipToOutline=true; contentDescription="Sélecteur de mode" }
-        val indicator=View(this).apply { background=shape(white,14,line); importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
-        outer.addView(indicator,FrameLayout.LayoutParams(0,dp(44),Gravity.START or Gravity.CENTER_VERTICAL).apply { leftMargin=dp(5) })
-        val labels=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; setPadding(dp(5),0,dp(5),0); gravity=Gravity.CENTER_VERTICAL }
-        var moveIndicator:((String,Boolean)->Unit)?=null
-        modes.forEachIndexed { index,mode ->
-            val cell=TextView(this).apply {
-                text=captions[index]; textSize=14f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER
-                minHeight=dp(48); isClickable=true; isFocusable=true; contentDescription="Mode ${captions[index]}"
-                setOnClickListener { newConversationMode=mode; onSelected(mode); moveIndicator?.invoke(mode,true) }
-            }
-            var downX=0f; var swiped=false
-            cell.setOnTouchListener { view,event ->
-                when(event.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> { downX=event.rawX; swiped=false; true }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        val dx=event.rawX-downX
-                        if(kotlin.math.abs(dx)>=dp(36)) {
-                            val current=modes.indexOf(newConversationMode).coerceAtLeast(0)
-                            val next=(current+if(dx<0) 1 else -1).coerceIn(0,modes.lastIndex)
-                            if(next!=current) { val mode=modes[next]; newConversationMode=mode; onSelected(mode); moveIndicator?.invoke(mode,true) }
-                            downX=event.rawX; swiped=true
-                        }
-                        true
-                    }
-                    android.view.MotionEvent.ACTION_UP -> { if(!swiped) view.performClick(); true }
-                    android.view.MotionEvent.ACTION_CANCEL -> true
-                    else -> true
-                }
-            }
-            labels.addView(cell,LinearLayout.LayoutParams(0,-1,1f))
-        }
-        outer.addView(labels,FrameLayout.LayoutParams(-1,-1))
-        fun positionIndicator(animate:Boolean) {
-            val available=outer.width-dp(10)
-            if(available<=0) return
-            val cellWidth=available/modes.size
-            val params=indicator.layoutParams as FrameLayout.LayoutParams
-            if(params.width!=cellWidth || params.height!=outer.height-dp(10)) {
-                params.width=cellWidth; params.height=outer.height-dp(10); indicator.layoutParams=params
-            }
-            val x=modes.indexOf(newConversationMode).coerceAtLeast(0)*cellWidth
-            if(animate) indicator.animate().translationX(x.toFloat()).setDuration(180).start() else indicator.translationX=x.toFloat()
-            for(i in 0 until labels.childCount) (labels.getChildAt(i) as TextView).setTextColor(if(modes[i]==newConversationMode) primary else muted)
-        }
-        outer.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_-> positionIndicator(false) }
-        outer.post { positionIndicator(false); onSelected(newConversationMode) }
-        moveIndicator={ mode,animate -> newConversationMode=mode; positionIndicator(animate) }
-        return outer
+        root.addView(bottomNav(if(code) "code" else "agent"))
     }
     private fun create(mode: String, projectId:String?=null) {
         if (busy) { toast("Attendez la fin de la réponse en cours."); return }
-        val r = JSONObject((if(projectId==null) py.callAttr("create_session",mode) else py.callAttr("create_session",mode,projectId)).toString())
-        if (r.optBoolean("ok")) showChat(r.getString("id")) else toast(r.optString("error"))
+        val r = try { JSONObject((if(projectId==null) py.callAttr("create_session",mode) else py.callAttr("create_session",mode,projectId)).toString()) }
+            catch(e:Exception) { toast("Création de la discussion impossible : ${e.message ?: "erreur interne"}"); return }
+        if (!r.optBoolean("ok")) { toast(r.optString("error","Création impossible")); return }
+        if (projectId!=null && r.optString("project_id")!=projectId) { toast("La discussion n’a pas été rattachée au projet; aucune conversation n’a été ouverte."); return }
+        showChat(r.getString("id"))
+    }
+    private fun refreshCurrentScreen() {
+        when(screen) {
+            "chat" -> currentSession?.let { showChat(it) } ?: showHome(newConversationMode)
+            "projects" -> showProjects()
+            "project" -> currentProjectId?.let { showProject(it) } ?: showProjects()
+            "automations" -> showAutomations()
+            "connectors" -> showConnectors()
+            "settings" -> showSettings()
+            "files" -> showFiles()
+            else -> showHome(newConversationMode)
+        }
     }
     private fun closeDrawer() { drawer?.let { host.value?.removeView(it) }; drawer = null }
     private fun openDrawer() {
         if (isWideLayout() || drawer != null) return
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken,0)
-        val layer = FrameLayout(this)
-        val scrim = View(this).apply { setBackgroundColor(0x660C2133); setOnClickListener { closeDrawer() } }
-        layer.addView(scrim, FrameLayout.LayoutParams(-1,-1))
-        val width = minOf(dp(322), resources.displayMetrics.widthPixels - dp(42))
-        val menu = column().apply { setBackgroundColor(sidebar); setPadding(dp(16),dp(18),dp(16),dp(12)); elevation = dp(10).toFloat() }
-        val brand = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; orientation = LinearLayout.HORIZONTAL }
-        brand.addView(ImageView(this).apply { setImageResource(R.drawable.nemesis_logo); scaleType=ImageView.ScaleType.CENTER_CROP; background=shape(pale,12); clipToOutline=true },LinearLayout.LayoutParams(dp(42),dp(42)))
-        brand.addView(column().apply { setPadding(dp(11),0,0,0); addView(label("NEMESIS",15f,strong,true)); addView(label("Votre espace IA",11f,muted)) },LinearLayout.LayoutParams(0,-2,1f))
-        brand.addView(action("×",Color.TRANSPARENT,muted) { closeDrawer() }.apply { textSize=23f; contentDescription="Fermer le menu" },LinearLayout.LayoutParams(dp(48),dp(48)))
-        menu.addView(brand); menu.addView(gap(25))
-        menu.addView(action("＋    Nouvelle discussion",pale,primary) { closeDrawer(); showHome() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START }); menu.addView(gap(8))
-        menu.addView(action("▦    Projets",Color.TRANSPARENT,strong) { closeDrawer(); showProjects() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START; contentDescription="Ouvrir les projets" }); menu.addView(gap(4))
-        menu.addView(action("◷    Automatisations",Color.TRANSPARENT,strong) { closeDrawer(); showAutomations() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START; contentDescription="Ouvrir les automatisations" }); menu.addView(gap(2))
-        menu.addView(action("⛓    Connecteurs",Color.TRANSPARENT,strong) { closeDrawer(); showConnectors() }.apply { gravity=Gravity.CENTER_VERTICAL or Gravity.START }); menu.addView(gap(8))
-        val search = EditText(this).apply { hint="Rechercher une discussion"; textSize=14f; setSingleLine(true); setTextColor(strong); setHintTextColor(muted); background=shape(Color.rgb(235,242,248),14); setPadding(dp(13),0,dp(13),0); minHeight=dp(48) }
-        menu.addView(search); menu.addView(gap(20)); menu.addView(label("DISCUSSIONS",11f,muted,true)); menu.addView(gap(7))
-        val list = column(); val scroll = ScrollView(this).apply { addView(list); isFillViewport=true }
-        menu.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
-        fun refresh(query: String) {
-            list.removeAllViews(); val sessions = JSONArray(py.callAttr("list_sessions").toString()); var shown=0
-            for(i in 0 until sessions.length()) {
-                val s = sessions.getJSONObject(i); val title=s.optString("title"); if (!title.contains(query,true)) continue; shown++
-                val id=s.getString("id")
-                val item=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; background=shape(if(id==currentSession) pale else Color.TRANSPARENT,12) }
-                val text=column().apply {
-                    setPadding(dp(12),dp(10),dp(4),dp(10)); addView(label(title,14f,strong,id==currentSession).apply { maxLines=2 })
-                    addView(label((if(s.optInt("pinned")==1) "Épinglée · " else "") + modeName(s.optString("mode")) + if(s.optInt("uncertain")==1) " · À vérifier" else "",11f,muted))
-                    isClickable=true; isFocusable=true; setOnClickListener { closeDrawer(); showChat(id) }
-                    setOnLongClickListener { closeDrawer(); sessionOptions(s); true }
-                }
-                item.addView(text,LinearLayout.LayoutParams(0,-2,1f))
-                item.addView(action("⋯",Color.TRANSPARENT,muted) { closeDrawer(); sessionOptions(s) }.apply { textSize=22f; contentDescription="Options de la discussion $title" },LinearLayout.LayoutParams(dp(48),dp(48)))
-                list.addView(item)
-
-            }
-            if(shown==0) list.addView(label("Aucune discussion trouvée.",13f,muted).apply { setPadding(dp(12),dp(18),0,0) })
+        val layer=FrameLayout(this)
+        layer.addView(View(this).apply{setBackgroundColor(0x660C2133);setOnClickListener{closeDrawer()}},FrameLayout.LayoutParams(-1,-1))
+        val width=minOf(dp(322),resources.displayMetrics.widthPixels-dp(42))
+        val menu=column().apply{setBackgroundColor(sidebar);setPadding(dp(12),dp(10),dp(10),dp(8));elevation=dp(10).toFloat()}
+        val brand=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL;orientation=LinearLayout.HORIZONTAL}
+        brand.addView(ImageView(this).apply{setImageResource(R.drawable.nemesis_logo);scaleType=ImageView.ScaleType.CENTER_CROP;background=shape(pale,10);clipToOutline=true},LinearLayout.LayoutParams(dp(36),dp(36)))
+        brand.addView(column().apply{setPadding(dp(8),0,0,0);addView(label("NEMESIS",13f,strong,true));addView(label("Votre espace IA",9.5f,muted))},LinearLayout.LayoutParams(0,-2,1f))
+        brand.addView(action("×",Color.TRANSPARENT,muted){closeDrawer()}.apply{textSize=20f;contentDescription="Fermer le menu"},LinearLayout.LayoutParams(dp(38),dp(38)))
+        menu.addView(brand);menu.addView(gap(7))
+        val search=EditText(this).apply{hint="Rechercher une discussion";textSize=12f;setSingleLine(true);setTextColor(strong);setHintTextColor(muted);background=shape(white,11,line);setPadding(dp(10),0,dp(10),0);minHeight=dp(38);contentDescription="Rechercher une discussion"}
+        menu.addView(search);menu.addView(gap(5))
+        fun navCell(title:String,click:()->Unit):TextView=action(title,Color.TRANSPARENT,strong,click).apply{textSize=10.5f;minHeight=dp(34);setPadding(dp(3),0,dp(3),0);gravity=Gravity.CENTER;maxLines=1}
+        fun navRow(entries:List<Pair<String,()->Unit>>) {
+            val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+            entries.forEachIndexed{index,e->row.addView(navCell(e.first,e.second),LinearLayout.LayoutParams(0,dp(34),1f));if(index<entries.lastIndex)row.addView(View(this),LinearLayout.LayoutParams(dp(3),1))}
+            menu.addView(row);menu.addView(gap(2))
         }
-        refresh(""); search.addTextChangedListener(object: TextWatcher { override fun beforeTextChanged(s:CharSequence?, start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){refresh(s?.toString()?:"")}; override fun afterTextChanged(s:Editable?){} })
-        menu.addView(separator()); menu.addView(action("▤    Fichiers",Color.TRANSPARENT,strong) { closeDrawer(); showFiles() }.apply { gravity=Gravity.CENTER_VERTICAL })
-        menu.addView(action("⚙    Paramètres",Color.TRANSPARENT,strong) { closeDrawer(); showSettings() }.apply { gravity=Gravity.CENTER_VERTICAL })
-        menu.addView(label("NEMESIS · version ${packageManager.getPackageInfo(packageName,0).versionName}",11f,muted).apply { setPadding(dp(12),dp(5),0,0) })
-        layer.addView(menu,FrameLayout.LayoutParams(width,-1,Gravity.START)); host.value?.addView(layer,FrameLayout.LayoutParams(-1,-1)); drawer=layer
+        navRow(listOf("Agent" to {closeDrawer();showHome("work")},"Code" to {closeDrawer();showHome("code")},"Projets" to {closeDrawer();showProjects()}))
+        navRow(listOf("Automatisations" to {closeDrawer();showAutomations()},"Connecteurs" to {closeDrawer();showConnectors()}))
+        menu.addView(action("＋  Nouvelle discussion",pale,primary){closeDrawer();create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=11.5f});menu.addView(gap(4))
+        menu.addView(label("DISCUSSIONS",9.5f,muted,true));menu.addView(gap(2))
+        val list=column();val scroll=ScrollView(this).apply{addView(list);isFillViewport=true}
+        menu.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        fun refresh(query:String){
+            list.removeAllViews();val sessions=JSONArray(try{py.callAttr("list_sessions").toString()}catch(_:Exception){"[]"});var shown=0
+            for(i in 0 until sessions.length()){
+                val item=sessions.optJSONObject(i)?:continue
+                if(item.optString("mode")!="work" || !item.isNull("project_id"))continue
+                val title=item.optString("title");if(!title.contains(query,true))continue;shown++
+                val id=item.optString("id");val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=shape(if(id==currentSession)pale else Color.TRANSPARENT,9)}
+                val text=column().apply{setPadding(dp(8),dp(5),dp(2),dp(5));addView(label(title,12f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(item.optInt("pinned")==1 || item.optInt("uncertain")==1) addView(label((if(item.optInt("pinned")==1)"Épinglée" else "")+(if(item.optInt("pinned")==1 && item.optInt("uncertain")==1)" · " else "")+(if(item.optInt("uncertain")==1)"À vérifier" else ""),9.5f,muted));isClickable=true;isFocusable=true;setOnClickListener{closeDrawer();showChat(id)};setOnLongClickListener{closeDrawer();sessionOptions(item);true}}
+                row.addView(text,LinearLayout.LayoutParams(0,-2,1f));row.addView(action("⋯",Color.TRANSPARENT,muted){closeDrawer();sessionOptions(item)}.apply{textSize=19f;contentDescription="Options de la discussion $title"},LinearLayout.LayoutParams(dp(40),dp(40)))
+                list.addView(row)
+            }
+            if(shown==0)list.addView(label("Aucune discussion trouvée.",11f,muted).apply{setPadding(dp(8),dp(10),0,0)})
+        }
+        refresh("");search.addTextChangedListener(object:TextWatcher{override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){refresh(s?.toString()?:"")};override fun afterTextChanged(s:Editable?){}})
+        menu.addView(separator())
+        navRow(listOf("Fichiers" to {closeDrawer();showFiles()},"Paramètres" to {closeDrawer();showSettings()}))
+        layer.addView(menu,FrameLayout.LayoutParams(width,-1,Gravity.START));host.value?.addView(layer,FrameLayout.LayoutParams(-1,-1));drawer=layer
     }
     private fun showProjects() {
-        screen="projects";currentSession=null;frame();root.addView(topBar("Projets","Conversations, fichiers et contexte partagés"));root.addView(separator())
+        currentProjectId=null;screen="projects";currentSession=null;frame();root.addView(topBar("Projets","Conversations, fichiers et contexte partagés"));root.addView(separator())
         val (_,body)=scrollArea(18);body.addView(gap(8))
         body.addView(label("Un projet garde ses instructions, ses fichiers et sa mémoire partagés entre ses discussions.",14f,muted));body.addView(gap(14))
         body.addView(action("＋  Nouveau projet",primary,white){createProject()});body.addView(gap(14))
         val projects=try{JSONArray(py.callAttr("project_list").toString())}catch(e:Exception){JSONArray()}
         if(projects.length()==0) body.addView(label("Vos projets apparaîtront ici.",14f,muted).apply{setPadding(dp(8),dp(18),0,0)})
         for(i in 0 until projects.length()) {
-            val item=projects.getJSONObject(i);val id=item.optString("id");val name=item.optString("name");val code=item.optString("mode")=="code"
+            val item=projects.getJSONObject(i);val id=item.optString("id");val name=item.optString("name")
             val card=column().apply{setPadding(dp(16),dp(14),dp(16),dp(14));background=shape(white,18,line);isClickable=true;isFocusable=true}
             val head=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL}
-            head.addView(label(name,17f,strong,true),LinearLayout.LayoutParams(0,-2,1f));head.addView(label(if(code)"CODE" else "AGENT",10f,primary,true).apply{setPadding(dp(9),dp(5),dp(9),dp(5));background=shape(pale,10)})
+            head.addView(label(name,17f,strong,true),LinearLayout.LayoutParams(0,-2,1f));head.addView(action("⋯",Color.TRANSPARENT,muted){projectOptions(id,name)}.apply{contentDescription="Options du projet $name"},LinearLayout.LayoutParams(dp(44),dp(42)))
             card.addView(head);card.addView(gap(5));card.addView(label("${item.optInt("conversations")} discussion(s) · instructions et mémoire partagées",12f,muted))
             if(item.optString("instructions").isNotBlank())card.addView(label(item.optString("instructions").take(120),12f,muted).apply{setPadding(0,dp(5),0,0)})
             card.setOnClickListener{showProject(id)};body.addView(card);body.addView(gap(9))
@@ -570,18 +546,11 @@ class MainActivity : Activity() {
 
     private fun createProject() {
         val name=formField("Nom du projet");val instructions=formField("Instructions propres à ce projet",multiline=true)
-        var mode="work"
-        sheet("Créer un projet","Fichiers et contexte partagés entre les discussions de ce projet."){body,dialog->
+        sheet("Créer un projet","Un espace de développement avec des discussions, des fichiers et un contexte partagés."){body,dialog->
             body.addView(label("Nom",13f,muted,true));body.addView(gap(4));body.addView(name);body.addView(gap(10))
-            body.addView(label("Mode",13f,muted,true));body.addView(gap(4))
-            val choices=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-            lateinit var agent:TextView;lateinit var code:TextView
-            agent=action("Agent",pale,primary){mode="work";agent.background=shape(pale,12);code.background=shape(Color.TRANSPARENT,12)}
-            code=action("Code",Color.TRANSPARENT,muted){mode="code";code.background=shape(pale,12);agent.background=shape(Color.TRANSPARENT,12)}
-            choices.addView(agent,LinearLayout.LayoutParams(0,dp(46),1f));choices.addView(code,LinearLayout.LayoutParams(0,dp(46),1f));body.addView(choices);body.addView(gap(10))
             body.addView(label("Instructions du projet",13f,muted,true));body.addView(gap(4));body.addView(instructions);body.addView(gap(12))
             body.addView(action("Créer le projet",primary,white){
-                val result=JSONObject(py.callAttr("project_create",name.text.toString(),mode,instructions.text.toString()).toString())
+                val result=JSONObject(py.callAttr("project_create",name.text.toString(),"code",instructions.text.toString()).toString())
                 if(result.optBoolean("ok")){dialog.dismiss();showProject(result.getString("id"))}else toast(result.optString("error","Création impossible"))
             })
         }
@@ -589,13 +558,17 @@ class MainActivity : Activity() {
 
     private fun showProject(id:String) {
         val data=JSONObject(py.callAttr("project_get",id).toString());val item=data.optJSONObject("project")?:run{toast("Projet introuvable");showProjects();return}
-        val name=item.optString("name");val mode=item.optString("mode");val code=mode=="code"
-        screen="project";currentSession=null;frame();root.addView(topBar(name,modeName(mode)+" · espace partagé"));root.addView(separator())
+        val name=item.optString("name")
+        currentProjectId=id;screen="project";currentSession=null;frame();root.addView(topBar(name,"Espace de développement partagé"));root.addView(separator())
         val (_,body)=scrollArea(18);body.addView(gap(8))
         body.addView(label("Instructions du projet",14f,strong,true));body.addView(gap(5))
         val instructions=item.optString("instructions")
         body.addView(label(if(instructions.isBlank())"Aucune instruction ajoutée." else instructions,13f,muted));body.addView(gap(10))
-        body.addView(action("Modifier les instructions",Color.TRANSPARENT,primary){editProject(id,name,instructions)}.apply{gravity=Gravity.START});body.addView(gap(6))
+        val projectActions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        projectActions.addView(action("Modifier",pale,primary){editProject(id,name,instructions)},LinearLayout.LayoutParams(0,dp(42),1f))
+        projectActions.addView(View(this),LinearLayout.LayoutParams(dp(8),1))
+        projectActions.addView(action("Supprimer",Color.TRANSPARENT,danger){confirmDeleteProject(id,name)},LinearLayout.LayoutParams(0,dp(42),1f))
+        body.addView(projectActions);body.addView(gap(6))
         body.addView(action("＋  Ajouter des fichiers au projet",pale,primary){chooseProjectUpload(id)});body.addView(gap(14))
         val rootPath=File(py.callAttr("project_root",id).toString());if(!rootPath.exists())rootPath.mkdirs()
         body.addView(label("FICHIERS",11f,muted,true));body.addView(gap(5))
@@ -603,11 +576,41 @@ class MainActivity : Activity() {
         if(files.isEmpty())body.addView(label("Aucun fichier pour le moment.",12f,muted))
         for(file in files){val rel=file.relativeTo(rootPath).path;body.addView(sheetRow(rel,"${file.length()} octets") { toast("Fichier du projet : $rel") });body.addView(gap(5))}
         body.addView(gap(14));body.addView(label("DISCUSSIONS",11f,muted,true));body.addView(gap(5))
-        body.addView(action("＋  Nouvelle discussion dans ce projet",primary,white){create(if(code)"code" else "work",id)});body.addView(gap(8))
+        body.addView(action("＋  Nouvelle discussion",primary,white){create("code",id)});body.addView(gap(8))
         val sessions=JSONArray(py.callAttr("list_sessions").toString());var count=0
-        for(i in 0 until sessions.length()) {val session=sessions.getJSONObject(i);if(session.optString("project_id")!=id)continue;count++;val sid=session.optString("id");body.addView(sheetRow(session.optString("title"),modeName(session.optString("mode"))){showChat(sid)});body.addView(gap(5))}
+        for(i in 0 until sessions.length()) {
+            val session=sessions.getJSONObject(i);if(session.optString("project_id")!=id)continue;count++
+            val sid=session.optString("id");val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=shape(white,12,line)}
+            row.addView(action(session.optString("title"),Color.TRANSPARENT,strong){showChat(sid)}.apply{gravity=Gravity.CENTER_VERTICAL;maxLines=1},LinearLayout.LayoutParams(0,dp(48),1f))
+            row.addView(action("⋯",Color.TRANSPARENT,muted){sessionOptions(session)}.apply{contentDescription="Options de la discussion ${session.optString("title")}"},LinearLayout.LayoutParams(dp(44),dp(44)))
+            body.addView(row);body.addView(gap(5))
+        }
         if(count==0)body.addView(label("La première conversation apparaîtra ici.",12f,muted))
         root.addView(bottomNav("projects"))
+    }
+
+    private fun projectOptions(id:String,name:String) {
+        sheet("Projet",name){body,dialog->
+            body.addView(sheetRow("Ouvrir","Discussions, fichiers et instructions") { dialog.dismiss();showProject(id) });body.addView(gap(7))
+            body.addView(sheetRow("Modifier","Renommer ou changer les instructions") {
+                dialog.dismiss();val project=JSONObject(py.callAttr("project_get",id).toString()).optJSONObject("project")
+                if(project!=null)editProject(id,project.optString("name"),project.optString("instructions")) else showProjects()
+            });body.addView(gap(7))
+            body.addView(sheetRow("Supprimer","Supprimer le projet et son contenu local") { dialog.dismiss();confirmDeleteProject(id,name) })
+        }
+    }
+    private fun confirmDeleteProject(id:String,name:String) {
+        if(busy){toast("Attendez la fin de la tâche du projet avant de le supprimer.");return}
+        val data=try{JSONObject(py.callAttr("project_get",id).toString())}catch(_:Exception){JSONObject()}
+        if(!data.optBoolean("ok")){toast("Projet introuvable");showProjects();return}
+        sheet("Supprimer le projet ?","« $name » et ses discussions locales, tâches planifiées, mémoires et fichiers partagés seront supprimés. Cette action est irréversible. Les autres projets et discussions ne seront pas touchés."){body,dialog->
+            body.addView(action("Supprimer le projet et son contenu",danger,white){
+                Thread{
+                    val result=try{JSONObject(py.callAttr("project_delete",id).toString())}catch(e:Exception){JSONObject().put("ok",false).put("error",e.message?:"Erreur interne")}
+                    runOnUiThread{if(!isFinishing&&!isDestroyed){if(result.optBoolean("ok")){dialog.dismiss();currentProjectId=null;toast("Projet et contenu supprimés");showProjects()}else toast(result.optString("error","Suppression impossible"))}}
+                }.start()
+            });body.addView(gap(7));body.addView(action("Annuler",Color.TRANSPARENT,muted){dialog.dismiss()})
+        }
     }
 
     private fun editProject(id:String,name:String,instructions:String) {
@@ -676,7 +679,8 @@ class MainActivity : Activity() {
         sheet("Discussion", title) { body, dialog ->
             body.addView(sheetRow("Renommer", "Modifier le nom affiché") { dialog.dismiss(); renameSession(id,title) }); body.addView(gap(8))
             body.addView(sheetRow(if(pinned) "Désépingler" else "Épingler", "Retrouver rapidement cette discussion") {
-                py.callAttr("pin_session",id,!pinned); dialog.dismiss(); openDrawer()
+                val result=try{JSONObject(py.callAttr("pin_session",id,!pinned).toString())}catch(e:Exception){JSONObject().put("ok",false).put("error",e.message)}
+                if(result.optBoolean("ok")){dialog.dismiss();refreshCurrentScreen()}else toast(result.optString("error","Épinglage impossible"))
             }); body.addView(gap(8))
             body.addView(sheetRow("Supprimer", "Supprimer uniquement la copie locale") { dialog.dismiss(); confirmDelete(id) })
         }
@@ -688,7 +692,7 @@ class MainActivity : Activity() {
             body.addView(action("Enregistrer",primary,white) {
                 if(busy) { toast("Attendez la fin de la tâche avant de renommer."); return@action }
                 val result=JSONObject(py.callAttr("rename_session",id,input.text.toString()).toString())
-                if(result.optBoolean("ok")) { dialog.dismiss(); openDrawer() } else toast(result.optString("error"))
+                if(result.optBoolean("ok")) { dialog.dismiss(); refreshCurrentScreen() } else toast(result.optString("error"))
             })
         }
     }
@@ -697,7 +701,7 @@ class MainActivity : Activity() {
         sheet("Supprimer la discussion ?", "La copie locale sera supprimée. La conversation DeepSeek ne sera pas supprimée.") { body, dialog ->
             body.addView(action("Supprimer",danger,white) {
                 val result=try{JSONObject(py.callAttr("delete_session",id).toString())}catch(e:Exception){JSONObject().put("ok",false).put("error",e.message?:"Suppression impossible")}
-                if(result.optBoolean("ok")){dialog.dismiss();drafts.remove(id);if(currentSession==id)showHome()else openDrawer()}
+                if(result.optBoolean("ok")){dialog.dismiss();drafts.remove(id);if(currentSession==id)showHome()else refreshCurrentScreen()}
                 else toast(result.optString("error","Suppression impossible"))
             }); body.addView(gap(8))
             body.addView(action("Annuler",Color.TRANSPARENT,muted) { dialog.dismiss() })
@@ -872,7 +876,7 @@ class MainActivity : Activity() {
         } } catch (_:java.util.concurrent.RejectedExecutionException) { chatLoadingId=null }
     }
     private fun renderChat(id:String, preservedScrollY:Int?, session:JSONObject) {
-        currentSession=id; currentMode=session.optString("mode","chat"); screen="chat"; frame()
+        currentSession=id; currentMode=session.optString("mode","work"); currentProjectId=if(session.isNull("project_id")) null else session.optString("project_id").takeIf{it.isNotBlank()}; screen="chat"; frame()
         root.addView(topBar("NEMESIS",modeName(currentMode)+" · DeepSeek")); root.addView(separator())
         val (scroll,body)=scrollArea(16)
         // The shortcut floats above the discussion, not inside the growing
@@ -1569,18 +1573,42 @@ class MainActivity : Activity() {
             body.addView(label("Les tailles sont indicatives; l’espace utilisé exact s’affiche après installation. Les rootfs ne sont pas intégrés à l’APK.",11f,muted))
         }
     }
-    private fun installExecutionEnvironment(id:String, parent:Dialog, button:TextView) {
-        button.isEnabled=false; button.text="Installation…"
-        toast("Téléchargement et installation en cours…")
-        Thread {
-            val result=try { JSONObject(py.callAttr("environment_install",id).toString()) } catch(e:Exception) { JSONObject().put("success",false).put("error",e.message) }
-            runOnUiThread {
-                if(!isFinishing && !isDestroyed) {
-                    if(result.optBoolean("success") && result.optBoolean("installed")) {
-                        parent.dismiss()
-                        toast("${result.optString("label",id)} installé · ${formatBytes(result.optLong("actual_installed_bytes"))} sur le disque")
-                        showExecutionEnvironments()
-                    } else { button.isEnabled=true; button.text="Réessayer"; toast(result.optString("error","Installation échouée")) }
+    private fun installExecutionEnvironment(id:String,parent:Dialog,button:TextView) {
+        button.isEnabled=false;button.text="Installation…"
+        val progress=android.app.ProgressDialog(this).apply{
+            setTitle(if(id=="debian")"Installation de Debian" else "Installation d’Alpine")
+            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL);max=1000;progress=0;setIndeterminate(true);setCancelable(false)
+            setMessage("Préparation de l’environnement…");show()
+        }
+        val handler=android.os.Handler(android.os.Looper.getMainLooper());var finished=false
+        val poll=object:Runnable{override fun run(){
+            if(finished||isFinishing||isDestroyed)return
+            val state=try{JSONObject(py.callAttr("environment_install_progress",id).toString())}catch(_:Exception){JSONObject()}
+            val phase=state.optString("phase","starting");val percent=state.optInt("percent",0).coerceIn(0,100)
+            val phaseText=when(phase){"download"->"Téléchargement du rootfs";"verify"->"Vérification de l’archive";"extract"->"Extraction du système";"packages"->"Installation des outils et configuration de nemesis";"finalize"->"Vérifications finales";else->"Préparation de l’environnement"}
+            val detail=state.optString("detail","")
+            progress.setMessage(if(detail.isBlank())phaseText else "$phaseText\n$detail")
+            progress.isIndeterminate=phase=="packages"||phase=="starting"
+            progress.progress=percent*10
+            handler.postDelayed(this,600)
+        }}
+        handler.post(poll)
+        Thread{
+            val result=try{JSONObject(py.callAttr("environment_install",id).toString())}catch(e:Exception){JSONObject().put("success",false).put("error",e.stackTraceToString())}
+            runOnUiThread{
+                finished=true;handler.removeCallbacks(poll);if(progress.isShowing)progress.dismiss()
+                if(isFinishing||isDestroyed)return@runOnUiThread
+                if(result.optBoolean("success")&&result.optBoolean("installed")){
+                    parent.dismiss();toast("${result.optString("label",id)} installé · ${formatBytes(result.optLong("actual_installed_bytes"))}");showExecutionEnvironments()
+                }else{
+                    button.isEnabled=true;button.text="Réessayer"
+                    val diagnostic=result.optString("error","Échec sans détail transmis par l’environnement Python.")
+                    android.app.AlertDialog.Builder(this).setTitle("Installation échouée — $id")
+                        .setMessage(diagnostic).setPositiveButton("Fermer",null)
+                        .setNeutralButton("Copier le diagnostic"){_,_->
+                            val clipboard=getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Diagnostic installation $id",diagnostic));toast("Diagnostic copié")
+                        }.show()
                 }
             }
         }.start()
