@@ -11,6 +11,38 @@ class MobileTests(unittest.TestCase):
         self.assertNotEqual(a, b); self.assertEqual(len(json.loads(m.list_sessions())), 2)
         self.assertEqual(json.loads(m.get_session(a))['mode'], 'work')
         m.configure(self.temp.name); self.assertEqual(len(json.loads(m.list_sessions())), 2)
+    def test_startup_removes_only_the_untouched_preview_and_preserves_user_sessions(self):
+        import time, uuid
+        user_id=json.loads(m.create_session('work'))['id']
+        demo_id=str(uuid.uuid4()); now=time.time()
+        prompt='Démo fictive : montre-moi comment tu rechercherais une information, vérifierais le résultat, puis utiliserais les outils de NEMESIS. N’exécute aucune action réelle.'
+        rows=[
+            ('user',prompt),
+            ('assistant','Je vais parcourir un exemple de bout en bout. Les étapes ci-dessous sont simulées pour prévisualiser l’interface : aucune requête ni commande n’a été lancée.'),
+            ('assistant','Première étape : je consulte des sources Web fictives, puis j’en ouvre une pour en extraire un court résumé.'),
+            ('tool',json.dumps({'result':{'demo':True}})),
+            ('tool',json.dumps({'result':{'demo':True}})),
+            ('assistant','Deuxième étape : dans une vraie tâche, je pourrais interroger une application ou exécuter une commande locale.'),
+            ('tool',json.dumps({'result':{'demo':True}})),
+            ('tool',json.dumps({'result':{'demo':True}})),
+            ('assistant','### Résumé de la démonstration\n- étapes simulées'),
+        ]
+        with m._db() as db:
+            db.execute("INSERT INTO sessions(id,title,mode,created,updated,pinned,project_id) VALUES(?,?,?,?,?,1,NULL)",
+                       (demo_id,'Démo · Parcours Agent et outils (fictif)','work',now,now))
+            db.executemany('INSERT INTO messages(session_id,role,text,created) VALUES(?,?,?,?)',
+                           [(demo_id,role,text,now+i) for i,(role,text) in enumerate(rows)])
+        m.configure(self.temp.name)
+        session_ids={row['id'] for row in json.loads(m.list_sessions())}
+        self.assertIn(user_id,session_ids)
+        self.assertNotIn(demo_id,session_ids)
+        with m._db() as db:
+            demo_row=db.execute('SELECT id FROM sessions WHERE id=?',(demo_id,)).fetchone()
+            user_row=db.execute('SELECT id FROM sessions WHERE id=?',(user_id,)).fetchone()
+        self.assertIsNone(demo_row)
+        self.assertIsNotNone(user_row)
+        self.assertFalse(hasattr(m,'configure_tokenharbor'))
+
     def test_web_search_reports_bot_challenge_as_error(self):
         from src.core.tools import web_search as search_module
         with patch.object(search_module, '_wiki_search', side_effect=RuntimeError('indisponible')), \

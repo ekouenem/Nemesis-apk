@@ -43,8 +43,6 @@ _CANCEL = threading.Event()
 _MCP_CLIENTS = {}
 _MCP_LOCK = threading.RLock()
 _WORKSPACE_LOCK = threading.RLock()
-_TOKENHARBOR_CONFIG = None
-_TOKENHARBOR_REQUESTS = {"models":0,"chat":0}
 
 
 def configure(files_dir, port=8090, token='', shared_dir='', native_lib_dir='', android_abi='', dns_servers=''):
@@ -117,6 +115,7 @@ def configure(files_dir, port=8090, token='', shared_dir='', native_lib_dir='', 
         # Remove the old client-generated warning from already stored answers.
         notice = '\n\nAucun outil utilisé pour cette réponse.'
         db.execute("UPDATE messages SET text=substr(text,1,length(text)-length(?)) WHERE role='assistant' AND substr(text,-length(?))=?", (notice,notice,notice))
+    _cleanup_preview_demo()
     migration_warnings=[]
     if _SHARED:
         with _db() as db: ids=[r['id'] for r in db.execute("SELECT id FROM sessions WHERE mode IN ('work','code')")]
@@ -153,35 +152,29 @@ def create_session(mode, project_id=None):
     return _data({'ok':True,'id':sid,'mode':mode,'project_id':pid})
 
 
-def ensure_demo_session():
-    # Synthetic, local-only transcript for the interface preview.
-    title='Démo · Parcours Agent et outils (fictif)'
+_PREVIEW_DEMO_TITLE = 'Démo · Parcours Agent et outils (fictif)'
+_PREVIEW_DEMO_PROMPT = 'Démo fictive : montre-moi comment tu rechercherais une information, vérifierais le résultat, puis utiliserais les outils de NEMESIS. N’exécute aucune action réelle.'
+
+
+def _cleanup_preview_demo():
+    """Remove only the exact untouched sample transcript; leave every user conversation intact."""
+    roles = ['user','assistant','assistant','tool','tool','assistant','tool','tool','assistant']
     with _db() as db:
-        row=db.execute('SELECT id FROM sessions WHERE title=? AND mode=?',(title,'work')).fetchone()
-    if row:
-        return _data({'ok':True,'created':False,'id':row['id']})
-    created=json.loads(create_session('work'))
-    if not created.get('ok'): return _data(created)
-    sid=created['id']; now=time.time()
-    with _db() as db:
-        db.execute('UPDATE sessions SET title=?,pinned=1,updated=? WHERE id=?',(title,now,sid))
-    _message(sid,'user','Démo fictive : montre-moi comment tu rechercherais une information, vérifierais le résultat, puis utiliserais les outils de NEMESIS. N’exécute aucune action réelle.')
-    _message(sid,'assistant','Je vais parcourir un exemple de bout en bout. Les étapes ci-dessous sont simulées pour prévisualiser l’interface : aucune requête ni commande n’a été lancée.')
-    examples=[
-        {'name':'web_search','parameters':{'query':'exemple de guide de voyage à Kpalimé'},'result':{'success':True,'demo':True,'results':[{'title':'Guide de démonstration — Kpalimé','url':'https://example.test/kpalime','snippet':'Résultat fictif utilisé uniquement pour la prévisualisation.'},{'title':'Informations pratiques — exemple','url':'https://example.test/pratique','snippet':'Aucune donnée réelle n’a été recherchée.'}]}},
-        {'name':'web_fetch','parameters':{'url':'https://example.test/kpalime'},'result':{'success':True,'demo':True,'status_code':200,'title':'Guide de démonstration','content':'Contenu simulé : prévoir un itinéraire, confirmer les horaires et vérifier les conditions locales avant le départ.'}},
-        {'name':'android_device','parameters':{'action':'list_apps'},'result':{'success':True,'demo':True,'action':'list_apps','apps':[{'label':'Navigateur','package':'com.example.browser'},{'label':'Messages','package':'com.example.messages'}]}},
-        {'name':'bash','parameters':{'command':'printf "NEMESIS_DEMO_OK\\n"; python3 --version'},'result':{'success':True,'demo':True,'exit_code':0,'executor':'proot','distro':'alpine','version':'3.22','output':'NEMESIS_DEMO_OK\nPython 3.12.9'}}
-    ]
-    _message(sid,'assistant','Première étape : je consulte des sources Web fictives, puis j’en ouvre une pour en extraire un court résumé.')
-    _message(sid,'tool',_data(examples[0]),duration_ms=420)
-    _message(sid,'tool',_data(examples[1]),duration_ms=260)
-    _message(sid,'assistant','Deuxième étape : dans une vraie tâche, je pourrais interroger une application ou exécuter une commande locale, uniquement selon vos instructions et les autorisations Android.')
-    _message(sid,'tool',_data(examples[2]),duration_ms=180)
-    _message(sid,'tool',_data(examples[3]),duration_ms=310)
-    _message(sid,'assistant','### Résumé de la démonstration\n- Recherche et consultation Web : étapes simulées.\n- Vérification d’applications et commande : résultats simulés.\n- Aucun navigateur, fichier, message ou commande n’a été modifié.\n\nTouchez une étape d’outil pour afficher ses paramètres et son résultat fictif.')
-    with _db() as db: db.execute('UPDATE sessions SET pinned=1,updated=? WHERE id=?',(time.time(),sid))
-    return _data({'ok':True,'created':True,'id':sid,'demo':True})
+        candidates=db.execute("SELECT id FROM sessions WHERE title=? AND mode='work' AND project_id IS NULL AND pinned=1",(_PREVIEW_DEMO_TITLE,)).fetchall()
+        for candidate in candidates:
+            sid=candidate['id']
+            messages=db.execute('SELECT role,text FROM messages WHERE session_id=? ORDER BY id',(sid,)).fetchall()
+            if len(messages)!=len(roles) or [m['role'] for m in messages]!=roles: continue
+            if messages[0]['text']!=_PREVIEW_DEMO_PROMPT or 'Résumé de la démonstration' not in messages[-1]['text']: continue
+            try:
+                tools=[m for m in messages if m['role']=='tool']
+                is_synthetic=len(tools)==4 and all(json.loads(m['text']).get('result',{}).get('demo') is True for m in tools)
+            except (TypeError,ValueError,AttributeError):
+                is_synthetic=False
+            if not is_synthetic: continue
+            for table in ('live_progress','feature_announced','connector_active','connector_announced','automations','todos','messages'):
+                db.execute('DELETE FROM %s WHERE session_id=?' % table,(sid,))
+            db.execute('DELETE FROM sessions WHERE id=?',(sid,))
 
 
 def list_sessions():
@@ -570,13 +563,6 @@ def connector_status(connector):
 
 def connector_refresh_status():
     return _data({'google_workspace':json.loads(connector_status('google_workspace'))})
-
-
-def clear_legacy_github_connector():
-    with _db() as db:
-        db.execute("DELETE FROM connector_active WHERE connector='github'")
-        db.execute("DELETE FROM connector_announced WHERE connector='github'")
-    return _data({'ok':True})
 
 
 def _disable_connector_everywhere(connector):
@@ -1574,82 +1560,20 @@ def _system_prompt(mode, sid=None):
 
 class _BeforeSubmitError(RuntimeError): pass
 
-def configure_tokenharbor(api_key):
-    """Set a process-memory-only TokenHarbor override; never writes preferences/files."""
-    global _TOKENHARBOR_CONFIG, _TOKENHARBOR_REQUESTS
-    _TOKENHARBOR_REQUESTS = {"models":0,"chat":0}
-    value = str(api_key or '').strip()
-    if value and (len(value) < 16 or len(value) > 512 or any(ord(c) < 33 for c in value)):
-        raise ValueError('Clé API TokenHarbor invalide')
-    _TOKENHARBOR_CONFIG = {'api_key': value, 'base_url': 'https://tokenharbor.ai',
-                           'model': 'deepseek-v4.1-flash:free'} if value else None
-    return bool(_TOKENHARBOR_CONFIG)
-
-
-def tokenharbor_status():
-    config = _TOKENHARBOR_CONFIG
-    return _data({'configured': bool(config),
-                  'model': config['model'] if config else '',
-                  'key_persisted': False})
-
-
-def tokenharbor_probe_models():
-    """Read the live TokenHarbor model catalog once; never persist the temporary key."""
-    config=_TOKENHARBOR_CONFIG
-    if not config: return _data({"ok":False,"error":"TokenHarbor n'est pas configuré en mémoire"})
-    try:
-        _TOKENHARBOR_REQUESTS["models"] += 1
-        response=requests.get(config["base_url"].rstrip("/")+"/v1/models",
-            headers={"Authorization":"Bearer "+config["api_key"],"Accept":"application/json",
-                     "User-Agent":"NEMESIS-Android-integration-test"},timeout=(10,20))
-        if response.status_code!=200:
-            return _data({"ok":False,"http_status":int(response.status_code),"error":"Catalogue TokenHarbor indisponible"})
-        body=response.json(); rows=body.get("data",[]) if isinstance(body,dict) else []
-        ids=[str(x.get("id","")) for x in rows if isinstance(x,dict)]
-        return _data({"ok":True,"http_status":200,"model_count":len(ids),
-                      "selected_model_available":config["model"] in ids})
-    except Exception as exc:
-        return _data({"ok":False,"error":"TokenHarbor catalogue : "+type(exc).__name__})
-
-
-def tokenharbor_request_metrics():
-    models=int(_TOKENHARBOR_REQUESTS.get("models",0)); chat=int(_TOKENHARBOR_REQUESTS.get("chat",0))
-    return _data({"models":models,"chat":chat,"total":models+chat})
-
-
 class SessionProvider(NemapiV3Provider):
     def __init__(self, sid, url):
-        override = _TOKENHARBOR_CONFIG
-        model = override['model'] if override else 'deepseek-chat'
-        endpoint = override['base_url'] if override else 'http://127.0.0.1:%d/v1' % _PORT
-        token = override['api_key'] if override else _TOKEN
+        model = 'deepseek-chat'
+        endpoint = 'http://127.0.0.1:%d/v1' % _PORT
         super().__init__({'provider': {'type': 'nemapi', 'model': model},
-                          'nemapi': {'url': endpoint, 'token': token, 'model': model, 'agent': 'nemesis', 'timeout': 90 if override else 180}})
+                          'nemapi': {'url': endpoint, 'token': _TOKEN, 'model': model,
+                                     'agent': 'nemesis', 'timeout': 180}})
         self.sid = sid
-        # TokenHarbor is stateless in this adapter: never treat a legacy
-        # DeepSeek URL as a live remote conversation or suppress the system prompt.
-        self.url = '' if override else url
+        self.url = url
         self._prompt_sent = bool(self.url)
         self.partial_text = ''
         self.max_retries = 1  # Never silently resend a possibly submitted request.
 
-    def _auth_headers(self):
-        if _TOKENHARBOR_CONFIG:
-            return {'Authorization': 'Bearer ' + _TOKENHARBOR_CONFIG['api_key']}
-        return super()._auth_headers()
-
     def _post_cancellable(self, payload, cancel_event):
-        if _TOKENHARBOR_CONFIG:
-            # OpenAI-compatible direct API: no DeepSeek web-session metadata or SSE URL capture.
-            payload.pop('nemesis_session', None)
-            payload.pop('fresh_chat', None)
-            _TOKENHARBOR_REQUESTS["chat"] += 1
-            response = NemapiV3Provider._post_cancellable(self, payload, cancel_event)
-            if response is not None and response.status_code != 200:
-                # Don't render provider error bodies which could echo sensitive request metadata.
-                response._content = json.dumps({'error': {'message': 'TokenHarbor HTTP %d' % response.status_code}}).encode('utf-8')
-                response._content_consumed = True
-            return response
         payload['nemesis_session'] = {'conversation_url': self.url} if self.url else {'fresh_chat': True}
         payload['stream'] = True
         self.partial_text = ''

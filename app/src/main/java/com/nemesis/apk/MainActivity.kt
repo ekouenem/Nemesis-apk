@@ -93,13 +93,10 @@ class MainActivity : Activity() {
         if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),707)
         }
-        SshBridge.init(this); AndroidComputerBridge.init(this); McpSecretBridge.init(this); clearLegacyGithubConnector(); GoogleWorkspaceBridge.init(this)
+        SshBridge.init(this); AndroidComputerBridge.init(this); McpSecretBridge.init(this); GoogleWorkspaceBridge.init(this)
         AutomationScheduler.init(this)
-        val demoPreview=try{JSONObject(py.callAttr("ensure_demo_session").toString())}catch(_:Exception){JSONObject()}
         val id = saved?.getString("session") ?: intent?.getStringExtra(AutomationExecutionService.EXTRA_SESSION)
-        if (id != null) { drafts[id] = saved?.getString("draft", "") ?: ""; showChat(id) }
-        else if(demoPreview.optBoolean("created") && demoPreview.optString("id").isNotBlank()) showChat(demoPreview.optString("id"))
-        else showHome()
+        if (id != null) { drafts[id] = saved?.getString("draft", "") ?: ""; showChat(id) } else showHome()
         try { py.callAttr("automation_reschedule_all") } catch (_:Exception) { }
         // Start after heavy Activity initialization so Android can dispatch the service promptly.
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -115,14 +112,6 @@ class MainActivity : Activity() {
         currentSession?.let { out.putString("session", it); out.putString("draft", drafts[it] ?: "") }
         super.onSaveInstanceState(out)
     }
-    private fun clearLegacyGithubConnector() {
-        try { getSharedPreferences("connector_github", MODE_PRIVATE).edit().clear().commit() } catch(_:Exception) {}
-        try {
-            val store=java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            if(store.containsAlias("nemesis_github_connector")) store.deleteEntry("nemesis_github_connector")
-        } catch(_:Exception) {}
-    }
-
     private fun configureStorage() {
         val hasStorage = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         val shared = if (hasStorage) sharedNemesisDirectory().absolutePath else ""
@@ -132,7 +121,6 @@ class MainActivity : Activity() {
                 .joinToString(",") }.orEmpty()
         py.callAttr("configure", filesDir.absolutePath, com.nemap.android.EmbeddedRuntime.port(), com.nemap.android.EmbeddedRuntime.token(), shared,
             applicationInfo.nativeLibraryDir, android.os.Build.SUPPORTED_ABIS.first(), activeDns)
-        py.callAttr("clear_legacy_github_connector")
         val skills = File(py.callAttr("skills_root").toString()); copyAssetTree("skills",skills)
     }
     /** Migrate the old shared directory without replacing existing user files. */
@@ -419,9 +407,6 @@ class MainActivity : Activity() {
         return scroll to body
     }
     private fun modeName(mode: String) = if(mode=="code") "Code" else "Agent"
-    private fun engineName():String = try {
-        if(JSONObject(py.callAttr("tokenharbor_status").toString()).optBoolean("configured")) "TokenHarbor" else "DeepSeek"
-    } catch(_:Exception) { "DeepSeek" }
     private fun modeDescription(mode: String) = when(mode) {
         "work" -> "Fichiers et commandes essentielles"
         "code" -> "Développement et environnement SSH"
@@ -457,12 +442,7 @@ class MainActivity : Activity() {
         body.addView(gap(18)); body.addView(begin,LinearLayout.LayoutParams(-1,dp(54)))
         body.addView(gap(18))
         body.addView(label("Vos discussions précédentes restent accessibles dans le menu latéral.",12f,muted).apply { gravity=Gravity.CENTER })
-        body.addView(gap(9)); body.addView(action("Aperçu : discussion fictive avec les outils",white,primary){openDemo()}.apply{gravity=Gravity.CENTER})
         root.addView(bottomNav(if(newConversationMode=="code") "code" else "agent"))
-    }
-    private fun openDemo() {
-        val result=try{JSONObject(py.callAttr("ensure_demo_session").toString())}catch(e:Exception){JSONObject().put("ok",false).put("error",e.message?:"Démo indisponible")}
-        if(result.optBoolean("ok")&&result.optString("id").isNotBlank()) showChat(result.optString("id")) else toast(result.optString("error","Démo indisponible"))
     }
     private fun modeSelector(onSelected:(String)->Unit):View {
         val modes=listOf("work","code")
@@ -893,11 +873,15 @@ class MainActivity : Activity() {
     }
     private fun renderChat(id:String, preservedScrollY:Int?, session:JSONObject) {
         currentSession=id; currentMode=session.optString("mode","chat"); screen="chat"; frame()
-        root.addView(topBar("NEMESIS",modeName(currentMode)+" · "+engineName())); root.addView(separator())
+        root.addView(topBar("NEMESIS",modeName(currentMode)+" · DeepSeek")); root.addView(separator())
         val (scroll,body)=scrollArea(16)
         // The shortcut floats above the discussion, not inside the growing
         // message list, and only appears when more content is below the reader.
-        (scroll.parent as? android.view.ViewGroup)?.removeView(scroll)
+        val scrollHost = scroll.parent as? android.view.ViewGroup
+        scrollHost?.removeView(scroll)
+        // On Chromebook/tablet scrollArea placed the scroll in a weighted stage.
+        // Remove that now-empty stage too, or it competes with scrollLayer for half the height.
+        if (scrollHost != null && scrollHost !== root) root.removeView(scrollHost)
         val scrollLayer=FrameLayout(this)
         scrollLayer.addView(scroll,FrameLayout.LayoutParams(-1,-1))
         val down=label("↓",22f,primary,true).apply {
@@ -915,10 +899,6 @@ class MainActivity : Activity() {
         root.addView(scrollLayer,transcriptParams)
         val messages=session.optJSONArray("messages") ?: JSONArray()
         val messageRevision=session.optLong("messages_revision",0)
-        if(session.optString("title").startsWith("Démo")) {
-            body.addView(label("DÉMO FICTIVE  ·  Aucun outil n’a été exécuté",12f,primary,true).apply { setPadding(dp(12),dp(9),dp(12),dp(9)); background=shape(pale,12); gravity=Gravity.CENTER })
-            body.addView(gap(10))
-        }
         if(session.optBoolean("has_older",false)) {
             body.addView(action("Afficher les messages précédents",pale,primary) {
                 historyVisible[id]=(historyVisible[id] ?: 20)+20
@@ -1022,7 +1002,7 @@ class MainActivity : Activity() {
         box.addView(input,LinearLayout.LayoutParams(-1,-2))
         val controls=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         controls.addView(action("＋",Color.TRANSPARENT,primary) { attachmentMenu(id) }.apply { textSize=23f; contentDescription="Ajouter une pièce jointe"; isEnabled=!busy },LinearLayout.LayoutParams(dp(48),dp(48)))
-        controls.addView(label(modeName(currentMode)+"  ·  "+engineName(),12f,muted,true),LinearLayout.LayoutParams(0,-2,1f))
+        controls.addView(label(modeName(currentMode)+"  ·  DeepSeek",12f,muted,true),LinearLayout.LayoutParams(0,-2,1f))
         val send=action(if(busy && busySession==id) "■" else "↑",primary,white) {
             if (busy && busySession==id) { py.callAttr("cancel"); toast("Arrêt demandé…"); return@action }
             val text=input.text.toString().trim(); val list=attachments[id]?.toList() ?: emptyList()
@@ -1464,43 +1444,6 @@ class MainActivity : Activity() {
         }
         pickerSession=null
     }
-    private fun showTokenHarborSettings() {
-        val active=try { JSONObject(py.callAttr("tokenharbor_status").toString()).optBoolean("configured") } catch(_:Exception) { false }
-        sheet("Moteur TokenHarbor", "La clé est gardée uniquement en mémoire, jamais dans les préférences, un fichier ou l’APK. Elle disparaît à l’arrêt du processus; il faudra la saisir à nouveau ensuite.") { body, dialog ->
-            body.addView(label(if(active) "ACTIF · la clé ne sera pas conservée après fermeture." else "INACTIF · DeepSeek reste utilisé tant que TokenHarbor n’est pas activé.",13f,if(active) primary else muted,true)); body.addView(gap(12))
-            val key=formField("Clé API TokenHarbor",secret=true)
-            body.addView(key); body.addView(gap(12))
-            body.addView(action("Tester et activer TokenHarbor",primary,white) {
-                val value=key.text.toString().trim()
-                if(value.isBlank()) { toast("Saisissez la clé API TokenHarbor."); return@action }
-                if(busy) { toast("Attendez la fin de la tâche en cours avant de changer de moteur."); return@action }
-                toast("Vérification du catalogue TokenHarbor…")
-                Thread {
-                    val result=try {
-                        py.callAttr("configure_tokenharbor",value)
-                        JSONObject(py.callAttr("tokenharbor_probe_models").toString())
-                    } catch(e:Exception) { JSONObject().put("ok",false).put("error",e.message ?: "Erreur de configuration") }
-                    runOnUiThread {
-                        if(isFinishing || isDestroyed) return@runOnUiThread
-                        if(result.optBoolean("ok") && result.optBoolean("selected_model_available")) {
-                            dialog.dismiss(); toast("TokenHarbor activé en mémoire · modèle DeepSeek V4.1 Flash Free.")
-                            if(screen=="settings") showSettings() else currentSession?.let { if(screen=="chat") showChat(it) }
-                        } else {
-                            try { py.callAttr("configure_tokenharbor","") } catch(_:Exception) { }
-                            val message=if(result.optInt("http_status")==403) "TokenHarbor refuse l’accès. Vérifiez l’autorisation des modèles gratuits dans votre compte." else result.optString("error","Modèle TokenHarbor indisponible")
-                            toast(message)
-                        }
-                    }
-                }.start()
-            }); body.addView(gap(8))
-            body.addView(action("Effacer la clé et revenir à DeepSeek",Color.TRANSPARENT,danger) {
-                if(busy) { toast("Attendez la fin de la tâche avant de changer de moteur."); return@action }
-                try { py.callAttr("configure_tokenharbor","") } catch(_:Exception) { }
-                dialog.dismiss(); toast("Clé effacée de la mémoire · DeepSeek rétabli.")
-                if(screen=="settings") showSettings() else currentSession?.let { if(screen=="chat") showChat(it) }
-            })
-        }
-    }
     private fun showSettings() {
         screen="settings"; currentSession=null; frame(); root.addView(topBar("Paramètres","Connexion et environnement")); root.addView(separator())
         val (_,body)=scrollArea(20); body.addView(gap(12)); body.addView(label("Paramètres",25f,strong,true)); body.addView(gap(8)); body.addView(label("Configurez votre assistant et votre espace de travail.",14f,muted)); body.addView(gap(22))
@@ -1510,7 +1453,8 @@ class MainActivity : Activity() {
         val accessibility=AndroidComputerBridge.accessibilityEnabled()
         body.addView(settingCard("Contrôle des applications Android", if(accessibility) "Accessibilité activée · outils d’interface disponibles en Work et Code." else "Facultatif · autorisez NEMESIS dans Accessibilité pour les gestes et la lecture de l’interface.") { AndroidComputerBridge.openAccessibilitySettings() }); body.addView(gap(22))
         body.addView(label("CONNEXION",11f,muted,true)); body.addView(gap(8))
-        body.addView(settingCard("Moteur · ${engineName()}",if(engineName()=="TokenHarbor") "TokenHarbor actif en mémoire · clé effacée à la fermeture." else "Activer TokenHarbor en mémoire ou revenir au moteur DeepSeek.") { showTokenHarborSettings() }); body.addView(gap(10))
+        body.addView(settingCard("Moteur · NemApi","Connexion DeepSeek et paramètres intégrés à NEMESIS.") { startActivity(Intent(this, com.nemap.android.MainActivity::class.java)) }); body.addView(gap(10))
+        body.addView(settingCard("Redémarrer le moteur DOM","Si le moteur ne répond plus après une longue session. Cookies et discussions conservés, aucun message renvoyé.") { restartDomEngine() }); body.addView(gap(10))
         body.addView(settingCard("Connecteurs","Google Workspace pour Work; GitHub via gh/git dans le shell Linux. Aucun jeton GitHub stocké dans l’APK.") { showConnectors() }); body.addView(gap(10))
         body.addView(settingCard("GitHub dans l’environnement Linux", "Pour Code, utilisez gh/git dans Alpine, Debian ou le shell SSH. Authentifiez-vous depuis ce terminal; NEMESIS ne conserve aucun PAT GitHub.") { showExecutionEnvironments() }); body.addView(gap(10))
         body.addView(gap(24)); body.addView(label("ESPACE DE TRAVAIL",11f,muted,true)); body.addView(gap(8))
