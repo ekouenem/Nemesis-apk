@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -8,7 +9,14 @@
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
   <application android:name=".NemesisApplication" android:allowBackup="false" android:label="NEMESIS" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
     <service android:name=".NemesisService" android:exported="false" />
-    <service android:name=".RuntimeRecoveryJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+  <service android:name=".NemesisAccessibilityService" android:label="NEMESIS — contrôle d’interface" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
+    <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+    <meta-data android:name="android.accessibilityservice" android:resource="@xml/nemesis_accessibility_service" />
+  </service>
+    <service android:name=".AutomationExecutionService" android:exported="false" />
+  <receiver android:name=".AutomationReceiver" android:exported="false" />
+  <receiver android:name=".AutomationBootReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter></receiver>
+  <service android:name=".RuntimeRecoveryJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
     <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>

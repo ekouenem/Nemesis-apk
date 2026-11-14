@@ -1,0 +1,3 @@
+<resources>
+    <string name="nemesis_accessibility_description">Permet à l’agent NEMESIS d’inspecter l’interface visible et d’effectuer les gestes demandés par l’utilisateur. Les champs de mot de passe sont masqués et ne peuvent pas être remplis.</string>
+</resources>

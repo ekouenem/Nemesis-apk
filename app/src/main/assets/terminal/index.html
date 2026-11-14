@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="color-scheme" content="dark"><link rel="stylesheet" href="xterm.css"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1118;color:#d9e7f3;font-family:system-ui,sans-serif;touch-action:manipulation}
+#root{height:100%;display:flex;flex-direction:column;background:#0b1118}#terminal{flex:1;min-height:0;padding:8px 6px 2px;box-sizing:border-box}
+#status{height:26px;flex:0 0 26px;padding:3px 12px;box-sizing:border-box;color:#8ba2b5;font-size:11px;border-top:1px solid #22303d}
+.xterm{height:100%;padding:4px}.xterm-viewport{overscroll-behavior:contain}
+</style><script>(function(w){
+if(typeof w.globalThis==="undefined")w.globalThis=w;
+if(typeof w.queueMicrotask!=="function")w.queueMicrotask=function(fn){Promise.resolve().then(fn).catch(function(err){setTimeout(function(){throw err},0)})};
+var replaceChildren=function(){while(this.firstChild)this.removeChild(this.firstChild);for(var i=0;i<arguments.length;i++){var n=arguments[i];this.appendChild(typeof n==="string"?document.createTextNode(n):n)}};
+if(w.Element&&!w.Element.prototype.replaceChildren)w.Element.prototype.replaceChildren=replaceChildren;
+if(w.DocumentFragment&&!w.DocumentFragment.prototype.replaceChildren)w.DocumentFragment.prototype.replaceChildren=replaceChildren;
+})(window)</script><script src="xterm.js"></script><script src="addon-fit.js"></script></head>
+<body><div id="root"><div id="terminal"></div><div id="status">Connexion au shell…</div></div><script>
+(()=>{const term=new Terminal({cursorBlink:true,scrollback:5000,convertEol:true,fontSize:14,fontFamily:"monospace",allowProposedApi:false,theme:{background:"#0b1118",foreground:"#d9e7f3",cursor:"#5cc8ff",selectionBackground:"#244b68",black:"#101b26",red:"#ef7777",green:"#7bd88f",yellow:"#e7c675",blue:"#69a8ff",magenta:"#c792ea",cyan:"#67d9df",white:"#d9e7f3"}});const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(document.getElementById("terminal"));
+function resize(){try{fit.fit();if(window.Nemesis)Nemesis.resize(term.cols,term.rows)}catch(e){}}
+function toB64(s){const b=new TextEncoder().encode(s);let raw="";for(let i=0;i<b.length;i++)raw+=String.fromCharCode(b[i]);return btoa(raw)}
+term.onData(data=>{try{if(window.Nemesis)Nemesis.sendInput(toB64(data))}catch(e){}});
+term.onResize(({cols,rows})=>{try{if(window.Nemesis)Nemesis.resize(cols,rows)}catch(e){}});
+window.nemesisWriteB64=function(payload){if(!payload)return;try{const raw=atob(payload),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);term.write(new TextDecoder().decode(bytes))}catch(e){}};
+window.nemesisStatus=function(message){document.getElementById("status").textContent=String(message||"")};
+window.addEventListener("resize",()=>setTimeout(resize,80));
+window.addEventListener("load",()=>setTimeout(()=>{resize();term.focus();if(window.Nemesis)Nemesis.ready(term.cols,term.rows)},120));
+})();
+</script></body></html>

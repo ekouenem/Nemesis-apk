@@ -9,7 +9,7 @@ class MobileTests(unittest.TestCase):
     def test_sessions_are_persistent_and_distinct(self):
         a = json.loads(m.create_session('chat'))['id']; b = json.loads(m.create_session('code'))['id']
         self.assertNotEqual(a, b); self.assertEqual(len(json.loads(m.list_sessions())), 2)
-        self.assertEqual(json.loads(m.get_session(a))['mode'], 'chat')
+        self.assertEqual(json.loads(m.get_session(a))['mode'], 'work')
         m.configure(self.temp.name); self.assertEqual(len(json.loads(m.list_sessions())), 2)
     def test_web_search_reports_bot_challenge_as_error(self):
         from src.core.tools import web_search as search_module
@@ -174,8 +174,10 @@ class MobileTests(unittest.TestCase):
         import sys, types
         bridge=Mock(); bridge.execute.return_value=json.dumps({'success':True,'output':'ok'})
         fake=types.SimpleNamespace(jclass=Mock(return_value=bridge))
+        with m._db() as db: db.execute("INSERT OR REPLACE INTO preferences(key,value) VALUES('execution_environment','ssh')")
+        sid=json.loads(m.create_session('work'))['id']
         with patch.dict(sys.modules, {'java':fake}):
-            result=m._tool('bash',{'command':'echo '+('x'*2000)})
+            result=m._tool('bash',{'command':'echo '+('x'*2000)},sid)
         self.assertTrue(result['success']); bridge.execute.assert_called_once()
 
     def test_sftp_tool_stays_in_session_workspace(self):
@@ -420,7 +422,14 @@ class MobileTests(unittest.TestCase):
                 m.save_preferences('Nouvelles préférences',True)
                 self.assertTrue(json.loads(m.send(sid,text))['ok'])
                 call=provider.send_message.call_args
-                self.assertEqual(text,call.args[0]); self.assertEqual('',call.kwargs['system_prefix'])
+                sent=call.args[0]
+                self.assertIn(text,sent)
+                if text == 'Premier':
+                    self.assertIn('Mise à jour de capacités NEMESIS',sent)
+                else:
+                    self.assertNotIn('Mise à jour de capacités NEMESIS',sent)
+                self.assertNotIn('Nouvelles préférences',sent)
+                self.assertEqual('',call.kwargs['system_prefix'])
         messages=json.loads(m.get_session(sid))['messages']; answer=messages[-1]
         self.assertEqual(answer['role'],'assistant'); self.assertIsNotNone(answer['duration_ms'])
         self.assertTrue(json.loads(m.rate_message(sid,answer['id'],1))['ok'])

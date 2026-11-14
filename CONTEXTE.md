@@ -1,15 +1,24 @@
 # Contexte de reprise — NEMESIS Android
 
-État au 13 novembre 2026. Session beta.9 clôturée : code poussé, release publiée et asset vérifié. Le compte rendu final est dans [SESSION-BETA9-FINAL.md](SESSION-BETA9-FINAL.md). Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
+État au 13 novembre 2026. La beta.9 est l’ancienne release publique. Le travail de v1.0.0 est préparé dans `/workspaces/Nemesis-apk`; aucun commit, push, tag ou release v1.0.0 n’a encore été créé. Aucun secret, token, cookie ou clé privée ne doit être ajouté au dépôt.
 
-## Version publiée
+## Préparation v1.0.0
+
+- `versionCode 11`, `versionName 1.0.0`; APK release construite, signée avec la clé de développement existante (même certificat beta.9), non une clé de production.
+- Artefact : `app/build/outputs/apk/release/app-release.apk`, 40 Mio, SHA-256 `e104d1eeb4d8c2b42c8df1fd200674e0bd6e6dd1c184f01e80ba327857c3cd44`; APK vérifiée par `apksigner`, version/appId et empreinte conformes.
+- Build `assembleDebug`, `assembleDebugAndroidTest`, `assembleRelease` réussi. 73 tests Python, tests JS et tests unitaires NemApi réussis; `git diff --check` propre.
+- TokenHarbor uniquement vérifié par tests synthétiques; aucun chat réel validé. PRoot inclus mais smoke test Alpine précédent arrêté sur un refus de permission pendant `apk add`. Tests instrumentés non lancés sur l’émulateur de travail pour préserver ses données.
+- Google OAuth non validé en réel. Le connecteur GitHub n’est pas inclus; les identifiants GitHub historiques sont effacés par l’initialisation, sans suppression volontaire des autres données.
+- Les sources PRoot/talloc/libandroid-shmem et leurs notices sont conservées sous `third_party/`; clés et credentials restent hors Git. Préserver `/home/user/uploads/credentials.txt`.
+
+## Version antérieure — beta.9
 
 - Release : **[v0.1.0-beta.9](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.9)** ; APK : `NEMESIS-v0.1.0-beta.9.apk` ; SHA-256 : `f04b43f3539cdd70c6f632b807a4b26922f05b4fdd40e4052436fa60ddec4a94` (identique au digest de l’asset GitHub). L’APK est signée avec la clé de développement, non une clé de production.
 - `versionCode 10`, `versionName 0.1.0-beta.9`, `minSdk 26`, quatre ABIs Chaquopy (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). L’APK release est signée avec le même certificat de développement que beta.8 (`ac7c51518c090e438392874c77a6968d7cb16ca711850e6b068dee67188e9347`) pour les mises à jour par-dessus; ce n’est pas une clé de production.
 - `targetSdk 28` est conservé temporairement pour la compatibilité avec `/sdcard/Nemesis`; la release est un sideload GitHub, **pas une soumission Google Play**. La seule règle lint désactivée est `ExpiredTargetSdkVersion`; une future soumission Play exige migration stockage/target SDK.
 - Dépôt `ekouenem/Nemesis-apk`, branche `main`, Codespace `nemesis-android-2-coeurs-wvxrrqp9x7g5fgx75`, chemin `/workspaces/Nemesis-apk`. Le dépôt NemApi-Apk d’origine ne doit pas être utilisé pour pousser cette application.
 
-## Modifications beta.9
+## Historique beta.9
 
 - **Moteur DOM** : minuterie posée au dispatch réel vers WebView; délais croissants pour les seules observations idempotentes; état de santé après trois délais consécutifs; redémarrage manuel qui ne renvoie pas de message. Les actions d’envoi/clic ne sont pas rejouées. WebView reconstruction après perte de renderer conservée.
 - **Shell** : PRoot/Debian entièrement retiré de l’APK, des sources de runtime et des réglages. Bash et SFTP utilisent uniquement SSH configuré; le workspace local Android n’est pas automatiquement monté sur l’hôte distant. Sortie Bash plafonnée à 512 Kio.
@@ -32,7 +41,7 @@
 - **SSH distant réel** : l’endpoint parser passe; aucun serveur SSH utilisateur connecté lors de cette validation. Le premier usage conserve TOFU sans authentification indépendante de l’empreinte; Codespaces ne sont pas pris en charge par le transport direct par mot de passe.
 - Les tests 50 MiB sont synthétiques; ne prouvent pas une upload réelle de cette taille. Aucun essai utilisateur ARMv7 n’a été fait.
 
-## Publication
+## Publication beta.9
 
 L’utilisateur a explicitement autorisé commit, push et release beta.9. Publiée en préversion GitHub; le tag pointe sur `4e626cf070a79fc13e34952df5c831ba9994582a` et l’asset a été vérifié avec le SHA-256 ci-dessus. Le compte rendu final est dans `SESSION-BETA9-FINAL.md`. Le commit de code et le commit documentaire sont poussés; aucun secret ou keystore n’est dans le dépôt.
 

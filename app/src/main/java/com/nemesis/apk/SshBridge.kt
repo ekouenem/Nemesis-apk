@@ -57,7 +57,11 @@ object SshBridge {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw.copyOfRange(0,12)))
         return String(cipher.doFinal(raw.copyOfRange(12,raw.size)), Charsets.UTF_8)
     }
-    fun clear() { check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." } }
+    @Synchronized fun clear() {
+        terminals.values.toList().forEach { it.channel.disconnect(); it.session.disconnect() }
+        terminals.clear()
+        check(prefs().edit().clear().commit()) { "Impossible de supprimer la configuration SSH." }
+    }
 
     /** Explicit user-requested probe. No command is executed on the remote host. */
     @JvmStatic fun testConnection(): String {
@@ -103,6 +107,76 @@ object SshBridge {
             }
         }
         return session
+    }
+
+
+    private data class InteractiveTerminal(
+        val session: com.jcraft.jsch.Session,
+        val channel: com.jcraft.jsch.ChannelShell,
+        val input: java.io.InputStream,
+        val output: java.io.OutputStream
+    )
+    private val terminals = mutableMapOf<String, InteractiveTerminal>()
+
+    /** Open a persistent SSH shell with a real xterm-compatible PTY. */
+    @Synchronized @JvmStatic fun terminalStart(columns: Int, rows: Int): String {
+        var session: com.jcraft.jsch.Session? = null
+        var channel: com.jcraft.jsch.ChannelShell? = null
+        return try {
+            val config = details()
+            require(config.optBoolean("configured")) { "Configurez d'abord un serveur SSH dans Paramètres." }
+            session = connect()
+            channel = session.openChannel("shell") as com.jcraft.jsch.ChannelShell
+            val cols = columns.coerceIn(20, 240); val lines = rows.coerceIn(6, 120)
+            channel.setPty(true)
+            channel.setPtyType("xterm-256color", cols, lines, 0, 0)
+            val input = channel.inputStream
+            val output = channel.outputStream
+            channel.connect(15_000)
+            val id = java.util.UUID.randomUUID().toString()
+            terminals[id] = InteractiveTerminal(session, channel, input, output)
+            JSONObject().put("success", true).put("session_id", id).put("executor", "ssh")
+                .put("columns", cols).put("rows", lines).toString()
+        } catch (e: Exception) {
+            channel?.disconnect(); session?.disconnect()
+            JSONObject().put("success", false).put("error", "Terminal SSH : " + (e.message ?: e.javaClass.simpleName).take(180)).toString()
+        }
+    }
+
+    @Synchronized @JvmStatic fun terminalWrite(sessionId: String, data: String): String {
+        val terminal = terminals[sessionId] ?: return JSONObject().put("success", false).put("error", "Session SSH inconnue").toString()
+        return try {
+            val bytes = Base64.decode(data, Base64.NO_WRAP)
+            require(bytes.size <= 65536) { "Entrée terminal trop volumineuse" }
+            terminal.output.write(bytes); terminal.output.flush()
+            JSONObject().put("success", true).toString()
+        } catch (e: Exception) { JSONObject().put("success", false).put("error", "Écriture SSH impossible").toString() }
+    }
+
+    @Synchronized @JvmStatic fun terminalRead(sessionId: String): String {
+        val terminal = terminals[sessionId] ?: return JSONObject().put("success", false).put("closed", true).put("error", "Session SSH inconnue").toString()
+        return try {
+            val available = terminal.input.available().coerceAtMost(65536)
+            val bytes = if (available > 0) ByteArray(available).also { terminal.input.read(it) } else ByteArray(0)
+            JSONObject().put("success", true).put("output_b64", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                .put("closed", terminal.channel.isClosed || !terminal.session.isConnected).toString()
+        } catch (e: Exception) {
+            JSONObject().put("success", false).put("closed", true).put("error", "Lecture SSH interrompue").toString()
+        }
+    }
+
+    @Synchronized @JvmStatic fun terminalResize(sessionId: String, columns: Int, rows: Int): String {
+        val terminal = terminals[sessionId] ?: return JSONObject().put("success", false).put("error", "Session SSH inconnue").toString()
+        return try {
+            terminal.channel.setPtySize(columns.coerceIn(20, 240), rows.coerceIn(6, 120), 0, 0)
+            JSONObject().put("success", true).toString()
+        } catch (e: Exception) { JSONObject().put("success", false).put("error", "Redimensionnement SSH impossible").toString() }
+    }
+
+    @Synchronized @JvmStatic fun terminalClose(sessionId: String): String {
+        val terminal = terminals.remove(sessionId)
+        terminal?.channel?.disconnect(); terminal?.session?.disconnect()
+        return JSONObject().put("success", true).put("closed", true).toString()
     }
 
     @JvmStatic fun execute(command: String, timeoutSeconds: Int): String {

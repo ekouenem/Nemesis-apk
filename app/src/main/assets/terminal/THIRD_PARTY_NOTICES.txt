@@ -1,0 +1,7 @@
+Bundled terminal emulator assets:
+- @xterm/xterm 5.5.0 (MIT), LICENSE.xterm
+- @xterm/addon-fit 0.10.0 (MIT), LICENSE.addon-fit
+Both are locally bundled for the offline Android WebView terminal; no CDN is used.
+The JavaScript bundles are transpiled with esbuild 0.25.12 targeting Chrome 69, the System WebView on the API 27 test device. Upstream MIT license files are retained unchanged.
+
+Compatibility shims in index.html provide globalThis, queueMicrotask and replaceChildren on the Android API 27 WebView (Chromium 69).

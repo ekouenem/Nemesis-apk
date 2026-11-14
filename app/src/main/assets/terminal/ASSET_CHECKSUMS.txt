@@ -1,0 +1,2 @@
+@xterm/xterm 5.5.0 | esbuild 0.25.12 target chrome69 | SHA-256 4a0ebd1bdc3a771d0c5156638365a81596d1fbb493d293c4274d74a326c1cba9
+@xterm/addon-fit 0.10.0 | esbuild 0.25.12 target chrome69 | SHA-256 ad8e172ae5f1abed8221f943e89d39d681771de891f18ed773936940a8ac5887

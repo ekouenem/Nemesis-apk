@@ -13,13 +13,11 @@ class ConnectorTests(unittest.TestCase):
         code=json.loads(m.create_session('code'))['id']
         with patch.object(m,'connector_status',return_value=json.dumps({'configured':True,'account':'test'})):
             self.assertTrue(json.loads(m.connector_set_active(work,'google_workspace',True))['ok'])
-            self.assertTrue(json.loads(m.connector_set_active(code,'github',True))['ok'])
-            self.assertFalse(json.loads(m.connector_set_active(work,'github',True))['ok'])
+            self.assertFalse(json.loads(m.connector_set_active(code,'google_workspace',True))['ok'])
         self.assertTrue(m.connector_active(work,'google_workspace'))
         self.assertFalse(m.connector_active(code,'google_workspace'))
         self.assertIn('google_drive_search',m._system_prompt('work',work))
-        self.assertIn('github_file_read',m._system_prompt('code',code))
-        self.assertNotIn('github_file_read',m._system_prompt('work',work))
+        self.assertNotIn('google_drive_search',m._system_prompt('code',code))
 
     def test_unconfigured_connector_cannot_be_enabled(self):
         sid=json.loads(m.create_session('code'))['id']
@@ -27,29 +25,21 @@ class ConnectorTests(unittest.TestCase):
             result=json.loads(m.connector_set_active(sid,'github',True))
         self.assertFalse(result['ok']); self.assertFalse(m.connector_active(sid,'github'))
 
-    def test_inactive_or_wrong_mode_connector_tool_never_calls_network(self):
+    def test_removed_github_tools_are_not_dispatched(self):
         sid=json.loads(m.create_session('work'))['id']
         with patch.object(m,'_connector_tool',side_effect=AssertionError('network dispatch must not happen')):
             result=m._tool('github_repo_list',{},sid)
-        self.assertFalse(result['success']); self.assertIn('Active ce connecteur',result['error'])
+        self.assertFalse(result['success'])
+        self.assertIn('Outil non disponible',result['error'])
+        self.assertFalse(json.loads(m.connector_set_active(sid,'github',True))['ok'])
 
-    def test_github_file_read_validates_path_and_decodes_base64(self):
-        fake={'type':'file','size':4,'path':'src/a.txt','sha':'abc','content':base64.b64encode(b'test').decode(),'html_url':'https://github.com/o/r/blob/main/src/a.txt'}
-        with patch.object(m,'_github_request',return_value=fake) as request:
-            result=m._github_tool('github_file_read',{'owner':'org','repo':'repo','path':'src/a.txt'})
-        self.assertEqual(result['content'],'test')
-        self.assertIn('contents/src/a.txt',request.call_args.args[1])
-        with self.assertRaises(ValueError): m._github_tool('github_file_read',{'owner':'org','repo':'repo','path':'../secret'})
-
-    def test_github_write_requires_commit_message_and_uses_existing_sha(self):
-        get={'type':'file','sha':'existing'}
-        put=Mock(return_value={'content':{'path':'a.txt','html_url':'https://github.com/o/r/a'},'commit':{'sha':'new'}})
-        with patch.object(m,'_github_request',side_effect=[get,put]) as request:
-            result=m._github_tool('github_file_write',{'owner':'org','repo':'repo','path':'a.txt','content':'new','message':'Update'})
-        self.assertTrue(result['success'])
-        self.assertEqual(request.call_args.kwargs['json']['sha'],'existing')
-        self.assertEqual(request.call_args.kwargs['json']['content'],base64.b64encode(b'new').decode())
-        with self.assertRaises(ValueError): m._github_tool('github_file_write',{'owner':'org','repo':'repo','path':'a.txt','content':'new'})
+    def test_removed_github_read_and_write_tools_are_not_dispatched(self):
+        sid=json.loads(m.create_session('work'))['id']
+        with patch.object(m,'_connector_tool',side_effect=AssertionError('network dispatch must not happen')):
+            for name in ('github_file_read','github_file_write'):
+                result=m._tool(name,{'owner':'org','repo':'repo','path':'a.txt'},sid)
+                self.assertFalse(result['success'])
+                self.assertIn('Outil non disponible',result['error'])
 
     def test_google_search_escapes_drive_query_and_limits_results(self):
         response=Mock(); response.json.return_value={'files':[{'id':'1234567890','name':'doc'}]}
@@ -88,36 +78,29 @@ class ConnectorTests(unittest.TestCase):
         sent2=provider.send_message.call_args.kwargs.get('message',provider.send_message.call_args.args[0])
         self.assertIn('google_drive_search',sent2)
 
-    def test_disabling_connector_removes_it_from_all_session_prompts(self):
-        sid=json.loads(m.create_session('code'))['id']
-        with patch.object(m,'connector_status',return_value=json.dumps({'configured':True,'username':'test','account':'test'})):
-            self.assertTrue(json.loads(m.connector_set_active(sid,'github',True))['ok'])
-        self.assertIn('github_file_read',m._system_prompt('code',sid))
-        m._disable_connector_everywhere('github')
-        self.assertFalse(m.connector_active(sid,'github'))
-        self.assertNotIn('github_file_read',m._system_prompt('code',sid))
+    def test_disabling_google_removes_it_from_all_session_prompts(self):
+        sid=json.loads(m.create_session('work'))['id']
+        with patch.object(m,'connector_status',return_value=json.dumps({'configured':True,'email':'test@example.test'})):
+            self.assertTrue(json.loads(m.connector_set_active(sid,'google_workspace',True))['ok'])
+        self.assertIn('google_drive_search',m._system_prompt('work',sid))
+        m._disable_connector_everywhere('google_workspace')
+        self.assertFalse(m.connector_active(sid,'google_workspace'))
+        self.assertNotIn('google_drive_search',m._system_prompt('work',sid))
 
-    def test_active_connector_enters_first_system_prompt_only_in_its_mode(self):
-        sid=json.loads(m.create_session('code'))['id']
-        with patch.object(m,'connector_status',return_value=json.dumps({'configured':True,'username':'user','account':'user'})):
-            self.assertTrue(json.loads(m.connector_set_active(sid,'github',True))['ok'])
+    def test_google_connector_enters_first_system_prompt_only_in_work_mode(self):
+        sid=json.loads(m.create_session('work'))['id']
+        with patch.object(m,'connector_status',return_value=json.dumps({'configured':True,'email':'user@example.test'})):
+            self.assertTrue(json.loads(m.connector_set_active(sid,'google_workspace',True))['ok'])
         provider=Mock(); provider.url=None; provider.send_message.return_value={'success':True,'response':'OK'}
         with patch.object(m,'SessionProvider',return_value=provider):
-            self.assertTrue(json.loads(m.send(sid,'Inspecte ce dépôt'))['ok'])
+            self.assertTrue(json.loads(m.send(sid,'Cherche un document'))['ok'])
         prefix=provider.send_message.call_args.kwargs['system_prefix']
-        self.assertIn('github_repo_search',prefix)
-        self.assertIn('github_file_write',prefix)
-        self.assertNotIn('github_pat_',prefix)
+        self.assertIn('google_drive_search',prefix)
+        self.assertIn('google_doc_create',prefix)
 
-    def test_github_connection_test_checks_token_owner(self):
-        with patch.object(m,'connector_status',return_value=json.dumps({'username':'alice'})), \
-             patch.object(m,'_github_request',return_value={'login':'alice','name':'Alice'}):
-            result=json.loads(m.github_test_config())
-        self.assertTrue(result['ok']); self.assertEqual(result['account'],'alice')
-        with patch.object(m,'connector_status',return_value=json.dumps({'username':'alice'})), \
-             patch.object(m,'_github_request',return_value={'login':'bob'}):
-            result=json.loads(m.github_test_config())
-        self.assertFalse(result['ok']); self.assertIn('@bob',result['error'])
+    def test_github_connector_is_not_part_of_this_release(self):
+        self.assertNotIn('github',m._CONNECTOR_NAMES)
+        self.assertFalse(hasattr(m,'github_test_config'))
 
     def test_google_connection_test_checks_live_drive_api_access(self):
         response=Mock(); response.json.return_value={'files':[]}

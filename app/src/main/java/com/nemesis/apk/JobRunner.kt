@@ -20,7 +20,7 @@ object JobRunner {
         private set
     @Volatile var lastError: String? = null
         private set
-    @Synchronized fun start(context: Context, id: String, text: String, attachments: String, previewText: String): Boolean {
+    @Synchronized fun start(context: Context, id: String, text: String, attachments: String, previewText: String, notifyCompletion:Boolean=true, onComplete: ((Boolean,String?)->Unit)? = null): Boolean {
         if (busySession != null) return false
         busySession = id; preview = previewText; lastError = null
         val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -32,12 +32,15 @@ object JobRunner {
                 if (!result.optBoolean("ok")) lastError = result.optString("error","Erreur")
             } catch (e: Exception) { lastError = e.message ?: "Erreur pendant la tâche" }
             finally {
+                if(notifyCompletion) AppTaskNotifications.completed(context.applicationContext,id,lastError==null)
                 if (lock.isHeld) lock.release()
+                val error=lastError
                 val callbacks = synchronized(this) {
                     preview = null; busySession = null
                     idleCallbacks.toList().also { idleCallbacks.clear() }
                 }
                 callbacks.forEach { callback -> main.post { callback() } }
+                onComplete?.let { callback -> main.post { callback(error==null,error) } }
             }
         }
         return true

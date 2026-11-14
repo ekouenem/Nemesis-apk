@@ -11,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Keystore/preferences round trips with synthetic credentials; user state is restored. */
+/** Google Workspace preferences round trip with synthetic metadata; user state is restored. */
 @RunWith(AndroidJUnit4::class)
 class ConnectorBridgeInstrumentedTest {
     private fun snapshot(prefs: SharedPreferences): Map<String, Any?> = prefs.all.toMap()
@@ -25,24 +25,6 @@ class ConnectorBridgeInstrumentedTest {
             is Float -> edit.putFloat(key, value)
         }
         check(edit.commit())
-    }
-
-    @Test fun githubTokenIsTrimmedEncryptedAndNeverReturnedByStatus() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        GitHubConnectorBridge.init(context)
-        val prefs = context.getSharedPreferences("connector_github", Context.MODE_PRIVATE)
-        val backup = snapshot(prefs)
-        val fake = "github_pat_" + "synthetic_test_".repeat(3)
-        try {
-            GitHubConnectorBridge.save(" alice ", " \n$fake\t ")
-            assertTrue(GitHubConnectorBridge.configured())
-            assertEquals("alice", GitHubConnectorBridge.username())
-            assertEquals(fake, GitHubConnectorBridge.token())
-            val status = JSONObject(GitHubConnectorBridge.status())
-            assertEquals("alice", status.optString("account"))
-            assertFalse(status.toString().contains(fake))
-            assertFalse(prefs.getString("token", "").orEmpty().contains(fake))
-        } finally { restore(prefs, backup) }
     }
 
     @Test fun googleAccountMetadataRoundTripsAndRestoresExistingState() {
