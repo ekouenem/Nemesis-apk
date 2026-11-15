@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Empreinte navigateur — comparaison Chrome / WebView</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#0b1322; color:#dbe6f3; margin:0; padding:16px; }
+  h1 { font-size:15px; color:#7fd7ff; margin:0 0 4px; }
+  p  { font-size:12px; color:#8ea3bf; margin:0 0 12px; line-height:1.5; }
+  table { border-collapse: collapse; width:100%; font-size:12px; }
+  td, th { border-bottom:1px solid #1e2b44; padding:6px 8px; text-align:left; vertical-align:top; }
+  th { color:#7fd7ff; font-weight:600; }
+  td.k { color:#9fb4d0; width:38%; }
+  code { color:#ffd479; }
+  #copy { margin-top:14px; font-size:11px; color:#8ea3bf; }
+  button { background:#1b6ef3; color:#fff; border:0; border-radius:6px; padding:8px 12px; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>Empreinte navigateur — page de comparaison</h1>
+<p>
+  1. Ouvre cette page dans un <strong>vrai Chrome</strong> sur le même appareil et note les valeurs.<br>
+  2. Compare avec <code>GET /api/debug/fingerprint</code> du moteur NemApi (la WebView).<br>
+  3. Les écarts <em>UA / WebView / écran / tactile</em> sont les indices que le provider peut exploiter.
+</p>
+<table id="t"></table>
+<div id="copy"><button onclick="copy()">Copier le JSON</button></div>
+<script>
+function fp() {
+  var out = {
+    ua: navigator.userAgent,
+    ua_data: null, plugins: -1, chrome_object: typeof window.chrome,
+    touch_points: -1, screen: null, viewport: null, dpr: window.devicePixelRatio || null,
+    languages: null, timezone: null, hardware_concurrency: -1, device_memory: null,
+    webgl: null, visibility: document.visibilityState,
+    fetch_looks_native: false, xhr_open_looks_native: false
+  };
+  try { out.plugins = navigator.plugins ? navigator.plugins.length : -1; } catch (e) {}
+  try { out.touch_points = navigator.maxTouchPoints; } catch (e) {}
+  try { out.screen = [screen.width, screen.height, screen.availWidth, screen.availHeight]; } catch (e) {}
+  try { out.viewport = [window.innerWidth, window.innerHeight]; } catch (e) {}
+  try { out.languages = navigator.languages ? Array.prototype.slice.call(navigator.languages) : null; } catch (e) {}
+  try { out.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+  try { out.hardware_concurrency = navigator.hardwareConcurrency || -1; } catch (e) {}
+  try { out.device_memory = navigator.deviceMemory || null; } catch (e) {}
+  try {
+    var c = document.createElement('canvas');
+    var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (gl) { var ext = gl.getExtension('WEBGL_debug_renderer_info');
+      out.webgl = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); }
+  } catch (e) {}
+  try { out.fetch_looks_native = /\[native code\]/.test(Function.prototype.toString.call(window.fetch)); } catch (e) {}
+  try { out.xhr_open_looks_native = /\[native code\]/.test(Function.prototype.toString.call(XMLHttpRequest.prototype.open)); } catch (e) {}
+  return out;
+}
+var data = fp();
+var rows = [
+  ['user-agent', data.ua], ['ua_data (brands/platform/mobile)', JSON.stringify(data.ua_data)],
+  ['navigator.plugins.length', data.plugins], ['window.chrome', data.chrome_object],
+  ['navigator.maxTouchPoints', data.touch_points],
+  ['screen (w,h,availW,availH)', JSON.stringify(data.screen)],
+  ['viewport (innerW,innerH)', JSON.stringify(data.viewport)], ['devicePixelRatio', data.dpr],
+  ['navigator.languages', JSON.stringify(data.languages)], ['timezone', data.timezone],
+  ['hardwareConcurrency', data.hardware_concurrency], ['deviceMemory', data.device_memory],
+  ['WebGL renderer', data.webgl], ['visibilityState', data.visibility],
+  ['fetch est natif', data.fetch_looks_native], ['XHR.open est natif', data.xhr_open_looks_native]
+];
+var html = '';
+rows.forEach(function (r) {
+  html += '<tr><td class="k">' + r[0] + '</td><td>' + (r[1] === null || r[1] === undefined ? '' : String(r[1])) + '</td></tr>';
+});
+document.getElementById('t').innerHTML = html;
+function copy() {
+  var text = JSON.stringify(data, null, 2);
+  if (navigator.clipboard) navigator.clipboard.writeText(text);
+  else { var ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); }
+  document.getElementById('copy').innerHTML = 'Copié.';
+}
+</script>
+</body>
+</html>

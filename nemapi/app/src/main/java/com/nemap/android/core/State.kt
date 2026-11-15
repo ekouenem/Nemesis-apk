@@ -83,6 +83,27 @@ object AppState {
         lastError = code
     }
 
+    // ---- refus de vérification de sécurité (PoW) ------------------------
+    /**
+     * Le provider a refusé une requête pour une vérification de sécurité.
+     * L'application hôte peut s'abonner via [onSecurityChallenge] pour
+     * informer l'utilisateur (toast, notification) : c'est un événement rare
+     * qui mérite une action visible, jamais une relance automatique.
+     */
+    @Volatile var onSecurityChallenge: (() -> Unit)? = null
+
+    @Volatile var lastSecurityChallengeAt: Long = 0L
+        private set
+
+    val securityChallenges = AtomicInteger(0)
+
+    fun noteSecurityChallenge() {
+        securityChallenges.incrementAndGet()
+        lastSecurityChallengeAt = System.currentTimeMillis()
+        lastError = "security_challenge"
+        try { onSecurityChallenge?.invoke() } catch (_: Throwable) {}
+    }
+
     /**
      * Adresses IPv4 joignables depuis le réseau local, **la bonne en premier**.
      *
@@ -205,6 +226,9 @@ object AppState {
             "prompt_chars": ${promptChars.get()},
             "completion_chars": ${completionChars.get()},
             "errors_by_code": $errs,
+            "security_challenges": ${securityChallenges.get()},
+            "last_security_challenge_at": "${iso(lastSecurityChallengeAt)}",
+            "cooldown_remaining_ms": ${Pacing.cooldownRemainingMs()},
             "last_request_at": "${iso(lastRequestAt.get())}"
           },
           "latency": ${latencyJson()},

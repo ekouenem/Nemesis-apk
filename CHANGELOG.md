@@ -1,5 +1,17 @@
 # Notes de version — NEMESIS Android
 
+## Correctif — blocage des comptes DeepSeek et déconnexions de session (branche `fix/deepseek-account-blocking`)
+
+- Un refus de vérification de sécurité (PoW) du provider est désormais un **code d'erreur explicite** (`security_challenge`, HTTP 429). Il n'est **plus rejoué automatiquement** : le client Python ne retente plus ces requêtes, et le moteur applique un refroidissement (3 min, puis 15 min après trois refus).
+- Arrêt immédiat sur session expirée (`login_required`, HTTP 401) : aucune requête n'est envoyée au provider sans session authentifiée, et la copie de session périmée est abandonnée.
+- **Cadence d'envoi** : deux envois ne s'enchaînent pas à moins de 8 s.
+- Correction de la **restauration de session** : les cookies n'étaient réinjectés qu'en comparant la longueur des chaînes, ce qui écrasait une session valide par une copie plus courte et déconnectait le compte. La comparaison se fait désormais par nom de cookie, la copie est limitée à 12 h et n'est jamais réinjectée au-dessus d'un cookie vivant.
+- **Identité du navigateur** : le User-Agent annonce désormais la version de Chrome réellement installée (au lieu de `Chrome/126` figé) et un mode `android` cohérent avec l'appareil est disponible (`POST /api/identity`). Le hook réseau n'est plus installé que sur l'origine du provider.
+- Le hook réseau se rend **indétectable** par une simple vérification `toString` de `fetch` / `XMLHttpRequest` (marquage « native code »).
+- Diagnostics en lecture seule : `GET /api/debug/fingerprint` (empreinte navigateur lue dans la page), journalisation unique des en-têtes envoyés au provider, et mesure du délai challenge PoW → complétion. Page de comparaison : `assets/web/fingerprint.html`.
+- Un refus de vérification de sécurité déclenche une **notification** dans NEMESIS : l'utilisateur vérifie la session, aucun renvoi automatique n'est déclenché.
+
+
 ## v1.0.0 — première release 1.0
 
 - Nouvelle interface Agent / Code, projets, historique et automatisations locales.

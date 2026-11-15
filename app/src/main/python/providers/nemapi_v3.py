@@ -13,6 +13,32 @@ from typing import Dict, Any, List, Optional
 from providers.base import BaseProvider
 
 
+#: Codes d'erreur du moteur NemApi qu'il ne faut JAMAIS rejouer
+#: automatiquement : un nouvel essai immédiat après un refus de vérification
+#: de sécurité (PoW) ou une session expirée aggrave le score de risque du
+#: compte DeepSeek.
+NON_RETRYABLE = frozenset({
+    "security_challenge",
+    "provider_cooldown",
+    "login_required",
+    "user_intervention_required",
+    "provider_not_configured",
+    "cancelled",
+})
+
+
+def _error_code(body: str) -> tuple:
+    """Extrait (code, message) de la réponse d'erreur JSON du moteur."""
+    try:
+        data = json.loads(body)
+        err = data.get("error", data) if isinstance(data, dict) else {}
+        if isinstance(err, dict):
+            return str(err.get("code", "") or ""), str(err.get("message", "") or "")
+    except Exception:
+        pass
+    return "", ""
+
+
 class NemapiV3Provider(BaseProvider):
     """Provider NEMAPI (anciennement NEMAPI v3).
 
@@ -269,10 +295,24 @@ class NemapiV3Provider(BaseProvider):
 
                 if resp.status_code != 200:
                     last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
+                    code, message = _error_code(resp.text)
+                    # Un refus de vérification de sécurité (PoW), une session
+                    # expirée ou un refroidissement ne se rejouent PAS : un
+                    # nouvel essai immédiat est exactement ce qui fait basculer
+                    # un compte DeepSeek en blocage.
+                    if code in NON_RETRYABLE:
+                        return {
+                            "success": False,
+                            "error": message or last_error,
+                            "error_code": code,
+                            "retryable": False,
+                        }
                     if attempt < self.max_retries:
-                        time.sleep(self.retry_delay)
+                        # Attente croissante : le provider doit avoir le temps de
+                        # terminer son challenge et de décompresser.
+                        time.sleep(min(self.retry_delay * (2 ** (attempt - 1)), 30))
                         continue
-                    return {"success": False, "error": last_error}
+                    return {"success": False, "error": last_error, "error_code": code}
 
                 text = resp.text
                 
@@ -328,7 +368,7 @@ class NemapiV3Provider(BaseProvider):
                 last_error = str(e)
 
             if attempt < self.max_retries:
-                time.sleep(self.retry_delay)
+                time.sleep(min(self.retry_delay * (2 ** (attempt - 1)), 30))
 
         return {
             "success": False,

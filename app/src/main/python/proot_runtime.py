@@ -132,12 +132,12 @@ def _installed_size_cached(path, version):
 
 
 def _toolchain_ready(path):
-    try: return (Path(path) / ".nemesis-toolchain-v2").read_text(encoding="ascii").strip() == "2"
+    try: return (Path(path) / ".nemesis-toolchain-v3").read_text(encoding="ascii").strip() == "3"
     except OSError: return False
 
 
 def _mark_toolchain_ready(path):
-    (Path(path) / ".nemesis-toolchain-v2").write_text("2\n", encoding="ascii")
+    (Path(path) / ".nemesis-toolchain-v3").write_text("3\n", encoding="ascii")
     marker = Path(path) / ".nemesis-rootfs-ready"
     try:
         version = marker.read_text(encoding="utf-8").strip().split()[0]
@@ -275,6 +275,20 @@ def _prime_debian_mirror_hosts(guest):
     return entries
 
 
+def _seed_guest_ca_bundle(guest):
+    """Seed the Linux guest with the app-bundled Mozilla roots before its first HTTPS package request."""
+    source = Path(certifi.where())
+    bundle = source.read_bytes()
+    if len(bundle) < 100_000 or b"-----BEGIN CERTIFICATE-----" not in bundle:
+        raise RuntimeError("Le bundle de certificats HTTPS de l’application est absent ou invalide.")
+    target = Path(guest) / "etc" / "ssl" / "certs" / "ca-certificates.crt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise RuntimeError("Chemin inattendu dans le magasin de certificats du rootfs.")
+    target.write_bytes(bundle)
+    return len(bundle)
+
+
 def _bootstrap_tools(distro, guest, progress=None):
     """Install a usable toolchain and the app-managed nemesis account in a rootfs."""
     data_dir = Path(_FILES_DIR) / "nemesis-linux"
@@ -320,6 +334,9 @@ def _bootstrap_tools(distro, guest, progress=None):
                    "openssh-client sudo passwd zip unzip coreutils findutils grep sed tar && " + identity + " && apt-get " + apt_opts + " clean && rm -rf /var/lib/apt/lists/*")
     else:
         raise ValueError("Distribution non prise en charge")
+    # The app's current Mozilla CA set is newer than some architecture-specific
+    # minirootfs bundles; seed it before apk/apt makes its first HTTPS request.
+    _seed_guest_ca_bundle(guest)
     if distro == "debian":
         _prime_debian_mirror_hosts(guest)
     if progress: progress("packages",76,"Installation des paquets et configuration de l’utilisateur nemesis…")

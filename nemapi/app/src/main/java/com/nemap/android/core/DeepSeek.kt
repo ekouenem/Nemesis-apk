@@ -143,7 +143,14 @@ object DeepSeek {
 
         // Keep a baseline so DOM fallback cannot return the previous turn as a new answer.
         val beforeSubmit = Engine.readAdapter("answer", onWait = onKeepAlive)
-        // 3) envoyer
+
+        // 3) cadence — deux envois ne s'enchaînent pas, et après un refus de
+        // vérification de sécurité on laisse le provider respirer. Le refus est
+        // explicite : le client ne doit pas rejouer tout seul.
+        val wait = Pacing.waitNeededMs()
+        if (wait > 0L) throw NemApiException.cooldown(wait)
+
+        // 4) envoyer
         // Once the submit call starts its outcome may be unknown even on error.
         onSubmitAttempt()
         val sub = Engine.adapter("submit", expectedUrl)
@@ -155,6 +162,7 @@ object DeepSeek {
             )
         }
         NemLog.i("dom", "envoi déclenché via ${sub.optString("via")}")
+        Pacing.noteSubmit()
 
         // 4) suivre la réponse, puis actionner « Continue » si le modèle a
         // atteint sa limite de sortie. Chaque reprise ouvre un nouveau flux;
@@ -384,6 +392,14 @@ object DeepSeek {
                 if (!differentUrl) {
                     val ready = Engine.adapter("ready", timeoutMs = 5_000)
                     if (ready.optBoolean("ok")) return
+                    // Session expirée : on s'arrête TOUT DE SUITE. Envoyer une
+                    // requête DeepSeek sans session authentifiée compte comme
+                    // une tentative en échec côté provider et fait monter le
+                    // score de risque du compte.
+                    if (ready.optBoolean("login_required")) {
+                        com.nemap.android.web.WebViewHost.onLoginRequired()
+                        throw NemApiException.login()
+                    }
                     loginObserved = loginObserved || ready.optBoolean("login_required")
                 }
             } catch (_: NemApiException) { /* transient DOM/renderer failure before submit */ }
@@ -473,16 +489,36 @@ object DeepSeek {
                                 "DeepSeek a interrompu une réponse en cours ; elle peut être incomplète.")
                         }
                         if (err.isNotEmpty() && acc.isEmpty()) {
+                            // Session expirée en cours de route (code 40003) :
+                            // on ne renvoie rien et on abandonne la copie de
+                            // session périmée, sinon le prochain démarrage
+                            // réinjecterait une session révoquée.
+                            if (err == "authentication_error") {
+                                com.nemap.android.web.WebViewHost.onLoginRequired()
+                                throw NemApiException.login()
+                            }
                             // The page may itself finish handling the challenge or start
                             // a new request immediately after this business error. Wait
                             // briefly for that native page behaviour; never resend here.
                             if (err == "security_challenge") {
+                                // Le provider a refusé la requête pour une vérification de
+                                // sécurité. On attend une éventuelle réaction NATIVE de la
+                                // page (la page peut résoudre le challenge elle-même),
+                                // mais on ne rejoue JAMAIS l'envoi ici : un nouvel essai
+                                // immédiat est précisément ce qui fait bloquer le compte.
                                 if (challengeGrace.shouldWait(st.optLong("id", -1L), now)) {
                                     val dom = freshText(Engine.readAdapter("answer", onWait = onKeepAlive))
                                     if (dom.isNotEmpty()) { onDelta(dom); acc=dom; break }
                                     delay(POLL_MS)
                                     continue
                                 }
+                                Pacing.noteChallenge(now)
+                                AppState.noteSecurityChallenge()
+                                throw NemApiException.challenge(
+                                    "DeepSeek a refusé la requête pour une vérification de sécurité " +
+                                        "(PoW). Aucun nouvel envoi ne partira avant la fin du refroidissement. " +
+                                        "Ouvre la conversation dans NemApi pour vérifier la session, puis réessaie plus tard."
+                                )
                             }
                             val domAnswer = Engine.readAdapter("answer", onWait = onKeepAlive)
                             val fromDom = freshText(domAnswer)

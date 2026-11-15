@@ -232,6 +232,42 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
                 sendJson(out, 200, r.toString())
             }
             path == "/api/debug/latency" -> sendJson(out, 200, AppState.latencyJson())
+            path == "/api/debug/fingerprint" -> {
+                // Lecture seule : caractéristiques du navigateur vues par la page.
+                // Aucune donnée de session, aucun cookie, aucun jeton.
+                val r = runBlocking {
+                    try { Engine.evalJson("window.__nap ? window.__nap.fingerprint() : \"{\\\"ok\\\":false,\\\"reason\\\":\\\"hook_absent\\\"}\"", 8_000) }
+                    catch (t: Throwable) { JSONObject().put("ok", false).put("error", t.message) }
+                }
+                sendJson(out, 200, r.toString())
+            }
+            path == "/api/identity" -> {
+                val ctx = context.applicationContext
+                val payload = JSONObject()
+                    .put("mode", com.nemap.android.web.WebViewHost.identityMode(ctx))
+                    .put("chrome_major", com.nemap.android.web.WebViewHost.chromeMajor())
+                    .put("user_agent", com.nemap.android.web.WebViewHost.userAgentFor(ctx))
+                    .put("webview_provider", AppState.webViewProvider)
+                    .put("modes", listOf(
+                        com.nemap.android.web.WebViewHost.IDENTITY_DESKTOP,
+                        com.nemap.android.web.WebViewHost.IDENTITY_ANDROID
+                    ))
+                if (method == "POST") {
+                    val mode = try { JSONObject(body).optString("mode", "") } catch (t: Throwable) { "" }
+                    if (mode == com.nemap.android.web.WebViewHost.IDENTITY_DESKTOP ||
+                        mode == com.nemap.android.web.WebViewHost.IDENTITY_ANDROID
+                    ) {
+                        com.nemap.android.web.WebViewHost.setIdentityMode(ctx, mode)
+                        // L'UA n'est figé qu'à la création du WebView : on le
+                        // reconstruit pour appliquer la nouvelle identité.
+                        com.nemap.android.web.WebViewHost.restart()
+                        payload.put("ok", true).put("applied", true)
+                    } else {
+                        payload.put("ok", false).put("error", "mode inconnu")
+                    }
+                }
+                sendJson(out, 200, payload.toString())
+            }
             path == "/api/service/start" -> {
                 context.startForegroundService(Intent(context, BridgeService::class.java).setAction(BridgeService.ACTION_START))
                 sendJson(out, 200, "{\"ok\":true}")
@@ -690,6 +726,13 @@ class ApiServer(private val context: Context, private val port: Int = AppState.A
         NemApiException.PROVIDER_BUSY -> 409
         NemApiException.TIMEOUT -> 504
         NemApiException.DOM_UNRESPONSIVE -> 503
+        // Session expirée : 401 explicite, le client ne doit PAS rejouer.
+        NemApiException.LOGIN_REQUIRED -> 401
+        // Refus de vérification de sécurité / cadence : 429, le client doit
+        // attendre. Un 400 ou un 500 conduit les clients génériques à
+        // réessayer tout de suite, ce qui aggrave le score de risque du compte.
+        NemApiException.SECURITY_CHALLENGE -> 429
+        NemApiException.PROVIDER_COOLDOWN -> 429
         else -> 400
     }
 

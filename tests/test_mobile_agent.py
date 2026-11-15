@@ -565,4 +565,17 @@ class MobileTests(unittest.TestCase):
                     self.assertIn('203.0.113.8 security.debian.org',hosts)
                 self.assertEqual(phases,[('packages',76),('verify',96)])
 
+    def test_proot_seeds_current_app_ca_bundle_into_guest(self):
+        import tempfile
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/"app-ca.pem"; guest=root/"guest"
+            source.write_bytes(b"-----BEGIN CERTIFICATE-----\n" + b"A"*120000 + b"\n-----END CERTIFICATE-----\n")
+            target=guest/"etc/ssl/certs/ca-certificates.crt"
+            with patch.object(runtime.certifi,"where",return_value=str(source)):
+                copied=runtime._seed_guest_ca_bundle(guest)
+            self.assertEqual(copied,source.stat().st_size)
+            self.assertEqual(target.read_bytes(),source.read_bytes())
+
 if __name__ == '__main__': unittest.main()

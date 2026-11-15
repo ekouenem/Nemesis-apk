@@ -30,7 +30,40 @@ class NemesisService : Service() {
             handler.postDelayed(this,15_000)
         }
     }
-    override fun onDestroy() { handler.removeCallbacks(watchdog); super.onDestroy() }
+    override fun onDestroy() {
+        handler.removeCallbacks(watchdog)
+        com.nemap.android.core.AppState.onSecurityChallenge = null
+        super.onDestroy()
+    }
+
+    /**
+     * Un refus de vérification de sécurité du provider est un événement rare
+     * qui mérite une action VISIBLE : l'utilisateur ouvre l'application et
+     * vérifie la session. Aucun renvoi automatique n'est déclenché — c'est
+     * précisément ce qui protège le compte.
+     */
+    private fun installChallengeHook() {
+        com.nemap.android.core.AppState.onSecurityChallenge = {
+            try {
+                val nm = getSystemService(NotificationManager::class.java)
+                nm.createNotificationChannel(NotificationChannel("nemesis_alerts", "Alertes DeepSeek", NotificationManager.IMPORTANCE_HIGH))
+                val pi = PendingIntent.getActivity(
+                    this, 2,
+                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val alert = Notification.Builder(this, "nemesis_alerts")
+                    .setContentTitle("DeepSeek : vérification de sécurité")
+                    .setContentText("Ouvre NEMESIS pour vérifier la session. Aucun renvoi ne partira pendant le refroidissement.")
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build()
+                nm.notify(4102, alert)
+            } catch (_: Throwable) {
+            }
+        }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CLOSE) {
@@ -52,6 +85,7 @@ class NemesisService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_download_done).setOngoing(true).setContentIntent(open)
             .addAction(Notification.Action.Builder(null,"Fermer",close).build()).build()
         startForeground(4101, n)
+        installChallengeHook()
         RuntimeRecoveryJob.schedule(applicationContext)
         handler.removeCallbacks(watchdog); handler.post(watchdog)
         return START_STICKY

@@ -3,6 +3,16 @@ plugins {
     id 'org.jetbrains.kotlin.android'
     id 'com.chaquo.python'
 }
+
+def configuredNemesisAbis = project.findProperty('nemesisAbis')?.toString()
+def nemesisAbiFilters = configuredNemesisAbis
+        ? configuredNemesisAbis.split(',').collect { it.trim() }.findAll { !it.isEmpty() }
+        : ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86']
+def supportedNemesisAbis = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86']
+if (nemesisAbiFilters.isEmpty() || !nemesisAbiFilters.every { supportedNemesisAbis.contains(it) }) {
+    throw new GradleException('nemesisAbis must be a comma-separated subset of: ' + supportedNemesisAbis.join(','))
+}
+
 android {
     namespace 'com.nemesis.apk'
     compileSdk 34
@@ -10,9 +20,9 @@ android {
         applicationId 'com.nemesis.apk'
         minSdk 26
         targetSdk 28
-        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86' }
-        versionCode 13
-        versionName '0.1.0-beta.10'
+        ndk { abiFilters(*nemesisAbiFilters) }
+        versionCode 16
+        versionName '0.1.0-beta.13'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     buildTypes {

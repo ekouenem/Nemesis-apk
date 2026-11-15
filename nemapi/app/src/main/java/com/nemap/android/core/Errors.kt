@@ -24,6 +24,16 @@ class NemApiException(
         const val DOM_UNRESPONSIVE = "dom_unresponsive"
         const val CANCELLED = "cancelled"
         const val UPSTREAM_ERROR = "upstream_error"
+        /**
+         * Refus explicite du provider pour une vérification de sécurité (PoW/challenge).
+         * CE CODE N'EST JAMAIS RETENTABLE : un nouvel envoi immédiat après un challenge
+         * fait monter le score de risque du compte jusqu'au blocage. Le client doit
+         * laisser la page résoudre le challenge et rejouer plus tard, ou demander
+         * une action humaine.
+         */
+        const val SECURITY_CHALLENGE = "security_challenge"
+        /** Refus temporaire du provider : cadence trop élevée, compte en cooldown. */
+        const val PROVIDER_COOLDOWN = "provider_cooldown"
 
         fun notReady(msg: String = "La page du provider n'est pas prête. Ouvre l'onglet et vérifie la connexion.") =
             NemApiException(PROVIDER_NOT_READY, msg)
@@ -48,6 +58,15 @@ class NemApiException(
         )
 
         fun cancelled() = NemApiException(CANCELLED, "La génération a été annulée.")
+
+        fun challenge(msg: String) = NemApiException(SECURITY_CHALLENGE, msg)
+
+        fun cooldown(msLeft: Long) = NemApiException(
+            PROVIDER_COOLDOWN,
+            "DeepSeek demande une pause après une vérification de sécurité : " +
+                "nouveau renvoi dans ${(msLeft / 1000).coerceAtLeast(1)} s. " +
+                "Ouvre la conversation dans NemApi pour vérifier la session."
+        )
     }
 }
 
@@ -63,6 +82,8 @@ object ErrorTypes {
         NemApiException.USER_INTERVENTION_REQUIRED -> "invalid_request_error"
         NemApiException.CANCELLED -> "cancelled"
         NemApiException.TIMEOUT -> "timeout"
+        NemApiException.SECURITY_CHALLENGE,
+        NemApiException.PROVIDER_COOLDOWN -> "rate_limit_error"
         NemApiException.DOM_UNRESPONSIVE,
         NemApiException.NETWORK_ERROR,
         NemApiException.STREAM_INTERRUPTED,

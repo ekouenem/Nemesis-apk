@@ -1,52 +1,58 @@
-# NEMESIS Android — v0.1.0-beta.10
+# NEMESIS Android — v0.1.0-beta.13
 
-**Préversion sideload** de NEMESIS Android. NemApi intégré reste le moteur principal de l’application ; DeepSeek est utilisé via NemApi. Cette publication reprend les changements d’interface Agent/Code/Projets et les diagnostics de l’environnement Linux local. Elle n’est pas une version Google Play.
+**Préversion sideload** avec NemApi intégré comme moteur principal. Cette release contient trois APK sélectionnés par architecture. Ce n’est pas une version Google Play.
 
-## Télécharger et installer
+## Téléchargements
 
-Télécharger [`NEMESIS-v0.1.0-beta.10.apk`](https://github.com/ekouenem/Nemesis-apk/releases/download/v0.1.0-beta.10/NEMESIS-v0.1.0-beta.10.apk) dans la [page de la release](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.10). Android 8.0 / API 26 minimum ; APK universelle pour `arm64-v8a`, `armeabi-v7a`, `x86_64` et `x86`.
+Dans la [release GitHub beta.13](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.13), choisir un seul fichier :
 
-- `versionCode 13`, `versionName 0.1.0-beta.10`.
-- Certificat de développement/debug conservé pour les mises à jour de sideload ; **ce n’est pas une signature de production**.
-- `targetSdk 28` reste en place pour le contrat de stockage historique. Une diffusion Play nécessite un chantier distinct de migration du stockage et de cible SDK.
-- Effectuer la mise à jour par-dessus l’application existante et conserver ses données. Ne pas désinstaller l’application pour installer cette préversion.
+- **Intel / x86** (inclut `x86` et `x86_64`) : `NEMESIS-v0.1.0-beta.13-x86.apk`.
+- **ARM 32 bits** : `NEMESIS-v0.1.0-beta.13-armeabi-v7a.apk`.
+- **ARM 64 bits** : `NEMESIS-v0.1.0-beta.13-arm64-v8a.apk`.
 
-## Changements
+Android 8 / API 26 minimum. Installer l’APK correspondant **par-dessus** l’application existante. Ne pas désinstaller l’app et ne pas effacer ses données. Les trois builds conservent la signature de développement/debug utilisée précédemment ; ce n’est pas une signature de production.
 
-- **NEMESIS Agent** est le parcours par défaut ; le sélecteur Agent/Code glissant a été retiré.
-- **Code** a sa propre section et sa liste de discussions classiques Code.
-- Le tiroir des discussions classiques n’affiche que les discussions Agent. Les discussions Code liées à un projet restent dans ce projet.
-- Les projets sont désormais des espaces Nemesis Code : création sans choix de mode, conversations liées au projet, fichiers et contexte partagés, options de renommage/suppression et accès aux conversations du projet depuis sa page.
-- Les anciens projets et leurs discussions liées sont migrés vers Code au démarrage ; ils ne sont pas effacés.
-- Le prompt système Agent a été renommé et le contexte de projet a été conservé.
-- Ajout de `docs/DEBUG-DEBIAN-PROOT-APT.md`, qui consigne les preuves et les prochaines étapes du diagnostic Debian.
+- `versionCode 16`, `versionName 0.1.0-beta.13`.
+- `targetSdk 28`, conservé pour le contrat de stockage historique.
+- NemApi reste le moteur principal ; aucun jeton ni secret de développement ne doit être ajouté au dépôt ou à l’APK.
 
-## Vérifications effectuées
+## Correctifs NemApi inclus
 
-- Tests Python ciblés de `mobile_agent` : **48 réussis**.
-- `:app:assembleRelease` compilé avec succès.
-- APK installée par-dessus l’installation existante dans l’émulateur x86 ; aucune désinstallation ni remise à zéro des données.
-- Parcours UI vérifiés dans l’émulateur : Agent par défaut, Code, tiroir filtré, création d’un projet Code, création d’une discussion liée et suppression explicite du projet de test.
-- Alpine : terminal PRoot ouvert ; `id` a fonctionné et `id nemesis` a renvoyé UID 1000. Le binaire sudo et la règle sudoers existent. **L’authentification sudo avec le mot de passe n’a pas été validée indépendamment.** Le rootfs reste PRoot et n’accorde pas root sur Android.
+- Les refus de challenge de sécurité, le cooldown, la session expirée, l’annulation et certaines erreurs de configuration sont des erreurs explicites non rejouées automatiquement par le client Python.
+- Temporisation croissante pour les autres erreurs HTTP ; cadence minimale de 8 s entre les envois et refroidissement après un challenge refusé.
+- Restauration des cookies par nom, sans écraser un cookie vivant ; copie de secours limitée à 12 h et abandonnée si le provider refuse la session.
+- Attente du challenge portée à 45 s ; erreur de challenge visible à l’utilisateur et état consultable par l’API NemApi.
+- Mode d’identité du WebView, hook limité aux origines DeepSeek, et diagnostics de l’empreinte navigateur / du challenge PoW.
 
-## Limitation connue — Debian
+Ces changements visent à éviter les répétitions immédiates et les réinjections de session obsolètes. **Ils ne garantissent pas qu’un compte ne sera jamais bloqué** : les décisions d’accès restent celles de DeepSeek. Le rapport source est [`docs/RAPPORT-DeepSeek-blocage-comptes.md`](docs/RAPPORT-DeepSeek-blocage-comptes.md) ; le patch exact reçu est joint séparément comme asset à la release GitHub beta.13.
 
-L’installation Debian n’est pas déclarée fonctionnelle dans cette préversion. Après la correction de résolution DNS Android, l’installation des paquets échoue encore avec `201::URIDone (14: Bad address)` et des avertissements `chown`/`chmod`. Le déplacement du cache APT vers `/tmp` n’a pas résolu le problème et a été retiré du runtime. Voir [le diagnostic Debian/PRoot/APT](docs/DEBUG-DEBIAN-PROOT-APT.md). Ne pas considérer l’utilisateur Debian `nemesis` ni sudo comme configurés tant qu’une nouvelle installation complète n’a pas réussi.
+## Vérifications et limites
 
-## Autres limites
+- Tests Python ciblés : **49 réussis** ; `py_compile` du client NemApi réussi.
+- Tests JS `nemapi/tools/test-hook.js` : tous réussis.
+- Compilation release x86 avec les changements NemApi : réussie ; le Kotlin modifié par le patch compile.
+- Les APK x86/x86_64, ARM32 et ARM64 sont compilées et leur manifeste, signature et ABI sont contrôlés avant publication.
+- Aucun test de connexion DeepSeek sur compte réel, aucune mesure sur 7 jours, et aucun essai du correctif sur appareil physique ARM n’ont été réalisés ici. Ne pas interpréter le build comme une garantie anti-blocage.
+- L’installation Alpine sur ARM reste à confirmer sur appareil : le correctif du magasin CA est inclus, mais l’émulateur ARM du Codespace n’a pas pu être installé faute d’espace disque. Si une erreur TLS persiste, vérifier date/heure Android et réseau ; ne pas désactiver TLS.
+- Debian PRoot/APT reste en panne connue : `201::URIDone (14: Bad address)` avec avertissements `chown`/`chmod`. Voir `docs/DEBUG-DEBIAN-PROOT-APT.md`. Debian et sudo ne sont pas déclarés fonctionnels.
+- La signature est debug, et non une signature de production.
 
-- Préversion expérimentale ; certificats de développement, intégrations externes et services distants dépendent de leur propre configuration.
-- Pas de validation sur appareil physique ARM, pas de test d’authentification réelle OAuth/DeepSeek revendiqué pour cette publication.
-- Les conversations, espaces de travail et projets restent stockés localement dans les données privées de l’application ; sauvegarder les éléments importants avant toute manipulation.
+## Fonctions de l’application
 
-## Développement
+- NEMESIS Agent est le parcours par défaut ; Code et les projets ont leurs sections distinctes.
+- Les projets sont des espaces Nemesis Code avec discussions et contexte partagés.
+- Les conversations, réglages et workspaces restent dans les données privées locales de l’application ; sauvegarder les éléments importants avant toute manipulation.
 
-Dans le Codespace du projet, avec JDK et SDK Android disponibles :
+## Reproduire les builds
+
+Utiliser JDK 21, puis dans le Codespace :
 
 ```bash
 export ANDROID_HOME=/workspaces/android-sdk
 export ANDROID_SDK_ROOT=/workspaces/android-sdk
-./gradlew --no-daemon --offline :app:assembleRelease
+./gradlew --no-daemon --offline -PnemesisAbis=x86,x86_64 :app:assembleRelease
+./gradlew --no-daemon --offline -PnemesisAbis=armeabi-v7a :app:assembleRelease
+./gradlew --no-daemon --offline -PnemesisAbis=arm64-v8a :app:assembleRelease
 ```
 
-Sortie : `app/build/outputs/apk/release/app-release.apk`. `credentials.txt`, clés API, cookies, keystores privés et données d’émulateur ne doivent jamais être ajoutés au dépôt.
+Chaque commande produit `app/build/outputs/apk/release/app-release.apk` pour les ABI demandées. Ne jamais ajouter `credentials.txt`, clés API, cookies, keystores privés ou données d’émulateur au dépôt.
