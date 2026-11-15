@@ -1,20 +1,24 @@
-# NEMESIS Android — v0.1.0-beta.13
+# NEMESIS Android — v0.1.0-beta.14
 
 **Préversion sideload** avec NemApi intégré comme moteur principal. Cette release contient trois APK sélectionnés par architecture. Ce n’est pas une version Google Play.
 
 ## Téléchargements
 
-Dans la [release GitHub beta.13](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.13), choisir un seul fichier :
+Dans la [release GitHub beta.14](https://github.com/ekouenem/Nemesis-apk/releases/tag/v0.1.0-beta.14), choisir un seul fichier :
 
-- **Intel / x86** (inclut `x86` et `x86_64`) : `NEMESIS-v0.1.0-beta.13-x86.apk`.
-- **ARM 32 bits** : `NEMESIS-v0.1.0-beta.13-armeabi-v7a.apk`.
-- **ARM 64 bits** : `NEMESIS-v0.1.0-beta.13-arm64-v8a.apk`.
+- **Intel / x86** (inclut `x86` et `x86_64`) : `NEMESIS-v0.1.0-beta.14-x86.apk`.
+- **ARM 32 bits** : `NEMESIS-v0.1.0-beta.14-armeabi-v7a.apk`.
+- **ARM 64 bits** : `NEMESIS-v0.1.0-beta.14-arm64-v8a.apk`.
 
 Android 8 / API 26 minimum. Installer l’APK correspondant **par-dessus** l’application existante. Ne pas désinstaller l’app et ne pas effacer ses données. Les trois builds conservent la signature de développement/debug utilisée précédemment ; ce n’est pas une signature de production.
 
-- `versionCode 16`, `versionName 0.1.0-beta.13`.
+- `versionCode 17`, `versionName 0.1.0-beta.14`.
 - `targetSdk 28`, conservé pour le contrat de stockage historique.
 - NemApi reste le moteur principal ; aucun jeton ni secret de développement ne doit être ajouté au dépôt ou à l’APK.
+
+## Correctif de stabilité beta.14
+
+Le délai normal de 8 secondes entre deux messages est maintenant attendu localement par NemApi au lieu d’être renvoyé comme un cooldown HTTP. Seul un challenge de sécurité réellement refusé déclenche encore un cooldown non rejouable. Les refus avant soumission remontent directement avec leur code ; ils ne sont plus enveloppés dans un faux « Flux interrompu / Échec après 1 tentatives ». Voir [`docs/BETA14-PACING-DEBUG.md`](docs/BETA14-PACING-DEBUG.md).
 
 ## Correctifs NemApi inclus
 
@@ -24,11 +28,11 @@ Android 8 / API 26 minimum. Installer l’APK correspondant **par-dessus** l’a
 - Attente du challenge portée à 45 s ; erreur de challenge visible à l’utilisateur et état consultable par l’API NemApi.
 - Mode d’identité du WebView, hook limité aux origines DeepSeek, et diagnostics de l’empreinte navigateur / du challenge PoW.
 
-Ces changements visent à éviter les répétitions immédiates et les réinjections de session obsolètes. **Ils ne garantissent pas qu’un compte ne sera jamais bloqué** : les décisions d’accès restent celles de DeepSeek. Le rapport source est [`docs/RAPPORT-DeepSeek-blocage-comptes.md`](docs/RAPPORT-DeepSeek-blocage-comptes.md) ; le patch exact reçu est joint séparément comme asset à la release GitHub beta.13.
+Ces changements visent à éviter les répétitions immédiates et les réinjections de session obsolètes. **Ils ne garantissent pas qu’un compte ne sera jamais bloqué** : les décisions d’accès restent celles de DeepSeek. Le rapport source est [`docs/RAPPORT-DeepSeek-blocage-comptes.md`](docs/RAPPORT-DeepSeek-blocage-comptes.md) ; le patch exact reçu est joint séparément comme asset à la release GitHub beta.14.
 
 ## Vérifications et limites
 
-- Tests Python ciblés : **49 réussis** ; `py_compile` du client NemApi réussi.
+- Tests Python ciblés : **50 réussis** ; `py_compile` du client NemApi réussi.
 - Tests JS `nemapi/tools/test-hook.js` : tous réussis.
 - Compilation release x86 avec les changements NemApi : réussie ; le Kotlin modifié par le patch compile.
 - Les APK x86/x86_64, ARM32 et ARM64 sont compilées et leur manifeste, signature et ABI sont contrôlés avant publication.

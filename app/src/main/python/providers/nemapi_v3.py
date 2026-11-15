@@ -365,6 +365,17 @@ class NemapiV3Provider(BaseProvider):
             except self.req.exceptions.ConnectionError as e:
                 last_error = f"Connexion refusée: {e}"
             except Exception as e:
+                # Les refus explicites avant soumission (cooldown/challenge,
+                # session non prête) ne sont ni des coupures réseau ni des
+                # tentatives à rejouer. Remonter le code et le message sans le
+                # faux résumé « Échec après N tentatives ».
+                if getattr(e, "retryable", None) is False:
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "error_code": str(getattr(e, "error_code", "") or ""),
+                        "retryable": False,
+                    }
                 last_error = str(e)
 
             if attempt < self.max_retries:

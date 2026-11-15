@@ -71,6 +71,27 @@ object DeepSeek {
     private fun isCancelled(token: () -> Boolean) = token()
 
     /**
+     * Attend la cadence normale au lieu de transformer un délai local en
+     * erreur de flux. Seul un cooldown déclenché par un vrai refus de sécurité
+     * est renvoyé comme erreur non rejouable.
+     */
+    private suspend fun awaitPacingSlot(shouldCancel: () -> Boolean, onKeepAlive: () -> Unit) {
+        var challengeWait = Pacing.cooldownRemainingMs()
+        if (challengeWait > 0L) throw NemApiException.cooldown(challengeWait)
+
+        var remaining = Pacing.minimumIntervalWaitMs()
+        if (remaining > 0L) NemLog.i("dom", "cadence normale : attente de ${remaining} ms avant l’envoi")
+        while (remaining > 0L) {
+            if (isCancelled(shouldCancel)) throw NemApiException.cancelled()
+            onKeepAlive()
+            delay(minOf(remaining, 250L))
+            challengeWait = Pacing.cooldownRemainingMs()
+            if (challengeWait > 0L) throw NemApiException.cooldown(challengeWait)
+            remaining = Pacing.minimumIntervalWaitMs()
+        }
+    }
+
+    /**
      * Exécute une génération complète. `onDelta` reçoit les fragments au fil de l'eau.
      * Rend le texte complet. Lève une NemApiException avec un code stable sinon.
      */
@@ -107,6 +128,8 @@ object DeepSeek {
         // The page can transiently lose the input even immediately after URL
         // navigation finished. Retry readiness only BEFORE submission.
         awaitComposer(shouldCancel, onKeepAlive, expectedUrl)
+        // Wait locally for normal pacing; only a real security cooldown is an error.
+        awaitPacingSlot(shouldCancel, onKeepAlive)
 
         val prompt = buildPrompt(messages)
         AppState.promptChars.addAndGet(prompt.length.toLong())
@@ -144,13 +167,7 @@ object DeepSeek {
         // Keep a baseline so DOM fallback cannot return the previous turn as a new answer.
         val beforeSubmit = Engine.readAdapter("answer", onWait = onKeepAlive)
 
-        // 3) cadence — deux envois ne s'enchaînent pas, et après un refus de
-        // vérification de sécurité on laisse le provider respirer. Le refus est
-        // explicite : le client ne doit pas rejouer tout seul.
-        val wait = Pacing.waitNeededMs()
-        if (wait > 0L) throw NemApiException.cooldown(wait)
-
-        // 4) envoyer
+        // 3) envoyer (la cadence a été attendue avant l'écriture du prompt)
         // Once the submit call starts its outcome may be unknown even on error.
         onSubmitAttempt()
         val sub = Engine.adapter("submit", expectedUrl)

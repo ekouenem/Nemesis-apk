@@ -1,5 +1,13 @@
 # Notes de version — NEMESIS Android
 
+## v0.1.0-beta.14 — correctif de pacing et de flux
+
+- L’intervalle normal de 8 s est attendu localement ; il ne déclenche plus un HTTP 429 ni l’échec du second message.
+- Le cooldown après un vrai challenge de sécurité reste explicite et non rejouable.
+- Les erreurs pré-soumission sont retournées directement avec leur code au lieu du faux résumé « Échec après N tentatives ».
+- Tests de pacing et de propagation SSE ajoutés.
+
+
 ## Correctif — blocage des comptes DeepSeek et déconnexions de session (branche `fix/deepseek-account-blocking`)
 
 - Un refus de vérification de sécurité (PoW) du provider est désormais un **code d'erreur explicite** (`security_challenge`, HTTP 429). Il n'est **plus rejoué automatiquement** : le client Python ne retente plus ces requêtes, et le moteur applique un refroidissement (3 min, puis 15 min après trois refus).

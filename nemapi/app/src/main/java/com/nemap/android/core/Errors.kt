@@ -63,8 +63,8 @@ class NemApiException(
 
         fun cooldown(msLeft: Long) = NemApiException(
             PROVIDER_COOLDOWN,
-            "DeepSeek demande une pause après une vérification de sécurité : " +
-                "nouveau renvoi dans ${(msLeft / 1000).coerceAtLeast(1)} s. " +
+            "DeepSeek a refusé une vérification de sécurité. Aucun nouveau message n’a été envoyé ; " +
+                "la pause de sécurité restante est de ${(msLeft / 1000).coerceAtLeast(1)} s. " +
                 "Ouvre la conversation dans NemApi pour vérifier la session."
         )
     }

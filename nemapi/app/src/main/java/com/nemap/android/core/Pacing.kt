@@ -40,16 +40,16 @@ object Pacing {
     }
 
     /**
-     * Vérifie qu'un envoi est autorisé. Rend le nombre de millisecondes à
-     * attendre, ou 0 si l'envoi peut partir.
+     * Délai restant pour respecter la cadence normale entre deux envois.
+     * Ce délai doit être attendu silencieusement par le moteur ; il n'est pas
+     * un refus du provider et ne doit jamais devenir une erreur HTTP 429.
      */
-    fun waitNeededMs(now: Long = System.currentTimeMillis()): Long {
-        val cool = cooldownRemainingMs(now)
-        if (cool > 0L) return cool
+    fun minimumIntervalWaitMs(now: Long = System.currentTimeMillis()): Long {
         val last = lastSubmitAt.get()
         if (last <= 0L) return 0L
         val elapsed = now - last
-        return if (elapsed < MIN_INTERVAL_MS) MIN_INTERVAL_MS - elapsed else 0L
+        return if (elapsed >= MIN_INTERVAL_MS) 0L
+        else (MIN_INTERVAL_MS - elapsed).coerceIn(0L, MIN_INTERVAL_MS)
     }
 
     /** À appeler juste avant l'envoi réel. */

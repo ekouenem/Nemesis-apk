@@ -447,6 +447,23 @@ class MobileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): provider._post_cancellable({'messages':[]},None)
         self.assertEqual(json.loads(m.get_session(sid))['uncertain'],1)
 
+    def test_pre_submit_cooldown_is_not_wrapped_as_failed_attempt(self):
+        sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
+        response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock()
+        response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
+        event={'error':{'code':'provider_cooldown','message':'Pause de sécurité : 12 s.'},'not_submitted':True}
+        response.iter_lines.return_value=['data: '+json.dumps(event),'data: [DONE]']
+        with patch.object(provider._session,'post',return_value=response) as post:
+            result=provider.send_message('Deuxième message')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['error_code'],'provider_cooldown')
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['error'],'Pause de sécurité : 12 s.')
+        self.assertNotIn('Échec après',result['error'])
+        self.assertNotIn('Flux interrompu',result['error'])
+        self.assertEqual(post.call_count,1)
+        self.assertEqual(json.loads(m.get_session(sid))['uncertain'],0)
+
     def test_stream_error_before_submit_does_not_lock_session(self):
         sid=json.loads(m.create_session('chat'))['id']; provider=m.SessionProvider(sid,None)
         response=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock(); response.status_code=200; response.__enter__.return_value=response; response.__exit__.return_value=None
