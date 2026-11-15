@@ -1544,6 +1544,10 @@ class MainActivity : Activity() {
                         }
                     }
                     card.addView(row)
+                    if (id != "ssh") {
+                        card.addView(gap(5))
+                        card.addView(action("Journal d'installation",Color.TRANSPARENT,muted) { showProotInstallLog(id) },LinearLayout.LayoutParams(-1,dp(40)))
+                    }
                     if (installed && id == "ssh") {
                         card.addView(gap(6))
                         card.addView(action("Configurer SSH / SFTP",pale,primary) { dialog.dismiss(); sshSettings() },LinearLayout.LayoutParams(-1,dp(44)))
@@ -1613,6 +1617,26 @@ class MainActivity : Activity() {
             }
         }.start()
     }
+    /**
+     * Journal d'installation PRoot : sortie complète de l'étape qui a échoué,
+     * diagnostics du moteur (PRoot) et test des primitives. Lecture seule.
+     */
+    private fun showProotInstallLog(id:String) {
+        Thread {
+            val payload=try { JSONObject(py.callAttr("environment_install_log",id).toString()) } catch(e:Exception){ JSONObject().put("log",e.message) }
+            runOnUiThread {
+                if(isFinishing||isDestroyed) return@runOnUiThread
+                val text=payload.optString("log","")
+                sheet("Journal d'installation · $id",payload.optString("path","")) { body, dialog ->
+                    body.addView(label(if(text.isBlank())"Aucun journal d'installation pour cette distribution." else text,10f,muted).apply{
+                        setTextIsSelectable(true)
+                        setPadding(dp(4),dp(4),dp(4),dp(4))
+                    })
+                }
+            }
+        }.start()
+    }
+
     fun showWebPreview(url:String) {
         if (!url.matches(Regex("http://127\\.0\\.0\\.1:[0-9]{1,5}"))) { toast("URL d’aperçu locale refusée."); return }
         sheet("Aperçu Web · Code", "Serveur local dans l’environnement Linux actif · $url") { body, dialog ->

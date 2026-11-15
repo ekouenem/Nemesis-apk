@@ -567,6 +567,8 @@ class MobileTests(unittest.TestCase):
                 command=calls[0][-1]
                 self.assertIn('sudo -S',calls[1][-1])
                 if distro=='alpine':
+                    self.assertIn("(apk update || (sed -i 's|https://|http://|g' /etc/apk/repositories && apk update))",command)
+                    self.assertIn('apk add --no-cache',command)
                     self.assertIn('adduser -D -s /bin/sh -h /home nemesis',command)
                     self.assertNotIn(' zip ',command)
                     self.assertNotIn(' unzip ',command)
@@ -594,5 +596,163 @@ class MobileTests(unittest.TestCase):
                 copied=runtime._seed_guest_ca_bundle(guest)
             self.assertEqual(copied,source.stat().st_size)
             self.assertEqual(target.read_bytes(),source.read_bytes())
+
+    def test_proot_debian_bootstrap_prefers_offline_install_with_online_fallback(self):
+        """Debian installe depuis le cache apt (téléchargé par l'hôte) et retombe en ligne."""
+        import os, tempfile, subprocess
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); files=root/'files'; native=root/'native'; guest=root/'guest'
+            (guest/'etc').mkdir(parents=True); native.mkdir()
+            for name in ('libproot.so','libproot-loader.so','libtalloc.so','libandroid-shmem.so'):
+                (native/name).write_bytes(b'x')
+            calls=[]
+            def run(args,**kwargs):
+                calls.append(args)
+                return subprocess.CompletedProcess(args,0,b'')
+            with patch.object(runtime,'_FILES_DIR',str(files)), \
+                 patch.object(runtime,'_NATIVE_LIB_DIR',str(native)), \
+                 patch.object(runtime,'_DNS_SERVERS',''), \
+                 patch.object(runtime.subprocess,'run',side_effect=run):
+                runtime._bootstrap_tools('debian',guest,None)
+            command=calls[0][-1]
+            self.assertIn('--no-download',command)
+            self.assertIn('install -y --no-install-recommends',command)
+            # le repli en ligne doit rester présent si le cache est incomplet
+            self.assertEqual(command.count('install -y'),2)
+
+
+    def test_proot_offline_packages_are_downloaded_by_the_host(self):
+        """Les .deb sont téléchargés par l'hôte et déposés dans le cache apt du guest."""
+        import tempfile
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        import hashlib
+        package_data=b"x"*1234
+        digest=hashlib.sha256(package_data).hexdigest()
+        uris=("'http://deb.debian.org/debian/pool/main/n/node-retry/node-retry_0.13.1.deb' "
+              "node-retry_0.13.1.deb 1234 SHA256:" + digest)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); guest=root/'guest'; (guest/'etc').mkdir(parents=True)
+            downloads=[]
+            def fake_run_guest(g, command, timeout=1800, label="guest", **kwargs):
+                if 'update' in command: return 0, "OK"
+                return 0, uris
+            def fake_download(url, target, sha=""):
+                downloads.append((url,str(target),sha))
+                Path(target).write_bytes(package_data)
+            with patch.object(runtime,'_run_guest',side_effect=fake_run_guest), \
+                 patch.object(runtime,'_download_to',side_effect=fake_download):
+                result=runtime._prepare_debian_packages(guest)
+            self.assertTrue(result['ok'],result)
+            self.assertEqual(result['downloaded'],1)
+            self.assertEqual(len(downloads),1)
+            self.assertTrue(downloads[0][1].endswith('var/cache/apt/archives/node-retry_0.13.1.deb'))
+
+
+    def test_proot_self_test_reports_failed_primitives(self):
+        import tempfile
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(runtime,'_run_guest',return_value=(0,"FAIL:chown\nFAIL:dns\nOK:write\n")):
+                results=runtime._proot_self_test(Path(tmp))
+            self.assertEqual(results.get('chown'),'fail')
+            self.assertEqual(results.get('dns'),'fail')
+            self.assertEqual(results.get('write'),'ok')
+
+
+    def test_proot_install_log_is_written_and_readable(self):
+        import tempfile
+        import proot_runtime as runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(runtime,'_FILES_DIR',tmp):
+                runtime._append_log('alpine','self-test','chown ok')
+                payload=json.loads(runtime.install_log('alpine'))
+            self.assertTrue(payload['success'])
+            self.assertIn('chown ok',payload['log'])
+
+
+    def test_proot_activation_preserves_target_and_staging(self):
+        import tempfile
+        import proot_runtime as runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); target=root/'rootfs'; staging=root/'rootfs.installing'
+            (target/'home/nemesis').mkdir(parents=True)
+            (target/'home/nemesis/keep.txt').write_text('user data')
+            (staging/'etc').mkdir(parents=True)
+            (staging/'etc/os-release').write_text('staged data')
+            with self.assertRaisesRegex(RuntimeError,'conservé sans modification'):
+                runtime._activate_rootfs(staging,target)
+            self.assertEqual((target/'home/nemesis/keep.txt').read_text(),'user data')
+            self.assertEqual((staging/'etc/os-release').read_text(),'staged data')
+            completed=root/'completed.installing'; active=root/'rootfs-active'
+            (completed/'etc').mkdir(parents=True)
+            (completed/'etc/os-release').write_text('ready rootfs')
+            runtime._activate_rootfs(completed,active)
+            self.assertFalse(completed.exists())
+            self.assertEqual((active/'etc/os-release').read_text(),'ready rootfs')
+
+    def test_proot_cached_deb_requires_matching_digest_and_size(self):
+        import hashlib, tempfile
+        import proot_runtime as runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            cached=Path(tmp)/'p.deb'; data=b'verified package bytes'; cached.write_bytes(data)
+            digest=hashlib.sha256(data).hexdigest()
+            self.assertTrue(runtime._cached_deb_matches(cached,len(data),digest))
+            self.assertFalse(runtime._cached_deb_matches(cached,len(data),'0'*64))
+            self.assertFalse(runtime._cached_deb_matches(cached,len(data)+1,digest))
+            self.assertFalse(runtime._valid_deb_uri('file:///tmp/p.deb','p.deb',len(data),digest))
+            self.assertFalse(runtime._valid_deb_uri('https://mirror.invalid/p.deb','../p.deb',len(data),digest))
+            self.assertTrue(runtime._valid_deb_uri('https://mirror.invalid/p.deb','p.deb',len(data),digest))
+
+    def test_proot_corrupt_cached_deb_is_redownloaded(self):
+        import hashlib, tempfile
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        package_data=b"trusted archive payload"
+        digest=hashlib.sha256(package_data).hexdigest()
+        filename="sample_1.0_all.deb"
+        uris=("'https://deb.debian.org/debian/pool/main/s/sample.deb' %s %d SHA256:%s" %
+              (filename,len(package_data),digest))
+        with tempfile.TemporaryDirectory() as tmp:
+            guest=Path(tmp)/'guest'
+            cache=guest/'var/cache/apt/archives'
+            cache.mkdir(parents=True)
+            # Same size, wrong bytes: size-only cache checks would incorrectly reuse this.
+            (cache/filename).write_bytes(b"X"*len(package_data))
+            def fake_run(g,command,timeout=1800,label="guest",**kwargs):
+                return (0,"updated") if 'update' in command else (0,uris)
+            downloads=[]
+            def fake_download(url,target,sha):
+                downloads.append(url)
+                Path(target).write_bytes(package_data)
+            with patch.object(runtime,'_run_guest',side_effect=fake_run), \
+                 patch.object(runtime,'_download_to',side_effect=fake_download):
+                result=runtime._prepare_debian_packages(guest)
+            self.assertTrue(result['ok'],result)
+            self.assertEqual(len(downloads),1)
+            self.assertEqual((cache/filename).read_bytes(),package_data)
+
+    def test_proot_install_collision_preserves_rootfs_and_staging(self):
+        import json, tempfile
+        import proot_runtime as runtime
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(runtime,'_FILES_DIR',tmp), \
+                 patch.object(runtime,'_ANDROID_ABI','armeabi-v7a'):
+                target=runtime._target_path('alpine')
+                staging=target.parent/(target.name+'.installing')
+                (target/'home/nemesis').mkdir(parents=True)
+                (target/'home/nemesis/keep.txt').write_text('preserve rootfs')
+                (staging/'bin').mkdir(parents=True)
+                (staging/'bin/sh').write_text('staged shell')
+                (staging/'etc').mkdir()
+                result=json.loads(runtime.install('alpine'))
+                self.assertFalse(result['success'])
+                self.assertIn('cible et le staging',result['error'])
+                self.assertEqual((target/'home/nemesis/keep.txt').read_text(),'preserve rootfs')
+                self.assertEqual((staging/'bin/sh').read_text(),'staged shell')
 
 if __name__ == '__main__': unittest.main()

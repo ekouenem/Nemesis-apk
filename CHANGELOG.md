@@ -1,5 +1,23 @@
 # Notes de version — NEMESIS Android
 
+## v0.1.0-beta.15 — correctifs d'installation PRoot
+
+- Debian : téléchargement hôte des paquets APT avec validation du SHA-256 attendu, y compris pour les archives déjà en cache ; rejet des URI et noms de fichiers invalides.
+- Reprise PRoot : activation atomique du rootfs sans remplacement ; si une cible et un staging coexistent, les deux sont conservés et l'installation s'arrête avec un diagnostic explicite.
+- Alpine : HTTPS reste prioritaire ; le repli HTTP conserve la vérification des signatures APK, mais ne protège plus l'authentification du transport.
+- Journal PRoot complet et bouton de consultation dans l'application ; tests de régression pour la conservation des données, le cache APT, le repli Alpine et les primitives.
+- Validation effectuée : 58 tests Python et compilation Android release réussis pour ARMv7, ARM64, x86 et x86_64. Aucun test sur téléphone ARMv7 n'est revendiqué.
+- APK signés avec la clé debug du projet, pas une clé de production.
+
+## Correctif — installation de l'environnement Linux (branche `fix/proot-install-armv7-debian`)
+
+- **Debian** : les paquets sont désormais téléchargés par l'HÔTE (Python de l'application + bundle `certifi`, la même chaîne qui télécharge le rootfs et qui fonctionne sur toutes les ABIs), déposés dans `/var/cache/apt/archives/` puis installés **hors-ligne** (`apt-get install --no-download`). Le guest ne fait plus de requête HTTP au moment où apt/dpkg écrivent dans le cache, ce qui écarte le syscall en échec à l'origine de `201::URIDone (14: Bad address)`. Repli automatique sur l'installation en ligne si le cache est incomplet.
+- **Alpine** : HTTPS reste prioritaire ; en cas d'échec de vérification de certificat (symptôme ARMv7), une seule tentative est faite avec le dépôt en HTTP. Les paquets restent vérifiés par la signature `apk` — seule l'authentification du transport est abandonnée, et les deux sorties sont conservées dans le journal.
+- **Diagnostics** : la sortie de PRoot n'est plus tronquée aux 4 000 derniers caractères (les messages du moteur sont écrits en début de sortie et étaient systématiquement coupés). Journal complet écrit dans `files/nemesis-linux/logs/install-<distro>.log`, affiché dans le message d'erreur et lisible depuis l'application via le bouton **Journal d'installation**.
+- **Test des primitives PRoot** (`write`, `read`, `chmod`, `chown`, `rename`, `symlink`, DNS, HTTPS) exécuté avant l'installation des paquets : si une primitive fondamentale échoue, l'installation s'arrête en nommant la primitive fautive.
+- **Reprise** : le rootfs n'est plus supprimé après un échec ; le nouvel essai reprend au stage des paquets sans retélécharger l'archive, et un rootfs extrait mais non finalisé est repris au lieu d'exiger une suppression manuelle.
+- 58 tests Python réussissent (`tests/test_mobile_agent.py`), dont 8 nouveaux sur le chemin hors-ligne, la reprise, le cache, le test de primitives et le journal.
+
 ## v0.1.0-beta.14 — correctif de pacing et de flux
 
 - L’intervalle normal de 8 s est attendu localement ; il ne déclenche plus un HTTP 429 ni l’échec du second message.

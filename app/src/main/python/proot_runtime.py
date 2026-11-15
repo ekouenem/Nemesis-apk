@@ -1,17 +1,22 @@
 """On-demand, checksummed Linux root filesystems and PRoot execution for NEMESIS."""
 import hashlib
+import ctypes
+import errno
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
 import ssl
 import certifi
 import threading
+import time
 import traceback
 import socket
 import ipaddress
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 ALPINE_VERSION = "3.22.8"
@@ -80,6 +85,23 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+#: Paquets installés dans l'environnement. Les listes sont partagées par
+#: l'installation en ligne (apk/apt dans le guest) et par l'installation
+#: hors-ligne (téléchargement des paquets par l'hôte, puis dpkg/apt --no-download).
+PACKAGES = {
+    "alpine": ["bash", "ca-certificates", "curl", "git", "python3", "py3-pip", "py3-virtualenv",
+               "nodejs", "npm", "openssh-client-default", "sudo", "shadow", "coreutils",
+               "findutils", "grep", "sed", "tar"],
+    "debian": ["bash", "ca-certificates", "curl", "git", "python3", "python3-pip", "python3-venv",
+               "nodejs", "npm", "openssh-client", "sudo", "passwd", "zip", "unzip", "coreutils",
+               "findutils", "grep", "sed", "tar"],
+}
+
+#: Format des lignes « --print-uris » d'apt :
+#:   'http://…/paquet.deb' paquet.deb 12345 SHA256:abcdef…
+_URI_LINE = re.compile(r"^'([^']+)'\s+(\S+)\s+(\d+)\s+SHA256:([0-9a-fA-F]+)")
+
+
 def _spec(distro):
     distro = str(distro or "").strip().lower()
     if distro not in SPECS:
@@ -143,6 +165,56 @@ def _mark_toolchain_ready(path):
         version = marker.read_text(encoding="utf-8").strip().split()[0]
         marker.write_text("%s %d\n" % (version, _installed_size(path)), encoding="utf-8")
     except (OSError, IndexError): pass
+
+
+def _activate_rootfs(staging, target):
+    """Atomically activate a completed rootfs without replacing an existing target."""
+    staging = Path(staging)
+    target = Path(target)
+    if target.exists() or target.is_symlink():
+        raise RuntimeError(
+            "Le rootfs cible existe déjà ; il est conservé sans modification. "
+            "Le staging reste disponible pour diagnostic ou reprise.")
+    # renameat2(RENAME_NOREPLACE) closes the check/rename race. Fail closed if
+    # the Android kernel/libc does not support the no-replace operation.
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError("Activation atomique sans remplacement non disponible ; staging conservé.") from exc
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(-100, os.fsencode(str(staging)), -100, os.fsencode(str(target)), 1)
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise RuntimeError("Le rootfs cible est apparu pendant l’activation ; il est conservé.")
+        raise OSError(error, os.strerror(error), str(target))
+
+
+def _cached_deb_matches(path, size, expected_sha256):
+    """Accept a cached Debian archive only when size and index SHA-256 match."""
+    path = Path(path)
+    try:
+        return (path.is_file() and not path.is_symlink() and
+                path.stat().st_size == int(size) and
+                _sha256(path).lower() == str(expected_sha256).lower())
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _valid_deb_uri(url, name, size, sha256):
+    """Reject unsafe archive paths and incomplete/untrusted APT URI metadata."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+        return (parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname) and
+                parsed.username is None and parsed.password is None and
+                bool(name) and name not in (".", "..") and
+                "/" not in name and "\\" not in name and
+                not any(ord(char) < 32 for char in name) and
+                int(size) > 0 and re.fullmatch(r"[0-9a-fA-F]{64}", str(sha256)) is not None)
+    except (TypeError, ValueError):
+        return False
 
 
 def status(distro):
@@ -269,10 +341,19 @@ def _prime_debian_mirror_hosts(guest):
             except (IndexError,ValueError): continue
             line=address+" "+host
             if line not in entries: entries.append(line)
-    if entries:
-        with (Path(guest)/"etc/hosts").open("a",encoding="ascii") as stream:
-            stream.write("\n"+"\n".join(entries)+"\n")
-    return entries
+    if not entries:
+        return entries
+    hosts = Path(guest) / "etc/hosts"
+    try:
+        existing = hosts.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        existing = ""
+    fresh = [line for line in entries if line not in existing]
+    if not fresh:
+        return entries
+    with hosts.open("a",encoding="ascii") as stream:
+        stream.write("\n"+"\n".join(fresh)+"\n")
+    return fresh
 
 
 def _seed_guest_ca_bundle(guest):
@@ -289,30 +370,261 @@ def _seed_guest_ca_bundle(guest):
     return len(bundle)
 
 
-def _bootstrap_tools(distro, guest, progress=None):
-    """Install a usable toolchain and the app-managed nemesis account in a rootfs."""
-    data_dir = Path(_FILES_DIR) / "nemesis-linux"
+# ---------------------------------------------------------------------------
+# Journal d'installation
+# ---------------------------------------------------------------------------
+# Les diagnostics de PRoot (par exemple « Detected broken PTRACE_POKEDATA »,
+# « ptrace(POKEDATA) », « integer under/overflow detected ») sont écrits sur
+# stderr, c'est-à-dire AU DÉBUT de la sortie. Le code ne conservait que les
+# 4 000 derniers caractères : ces messages étaient systématiquement coupés.
+# Le journal complet est désormais écrit sur disque et renvoyé avec l'erreur.
+
+_LOG_DIR_NAME = "logs"
+
+
+def _log_dir():
+    return Path(_FILES_DIR) / "nemesis-linux" / _LOG_DIR_NAME
+
+
+def _safe_name(name):
+    """Nom de fichier sûr pour un identifiant de distribution ou un chemin."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(name or "")).strip("-")
+    return cleaned[:60] or "unknown"
+
+
+def _append_log(distro, label, text):
+    """Ajoute un bloc horodaté au journal d'installation. Rend le chemin du journal."""
+    try:
+        directory = _log_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / ("install-%s.log" % _safe_name(distro))
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a", encoding="utf-8", errors="replace") as stream:
+            stream.write("\n===== %s [%s] =====\n%s\n" % (stamp, label, text or ""))
+        return str(path)
+    except OSError:
+        return ""
+
+
+def install_log(distro, maximum=200000):
+    """Rend le journal d'installation de la distribution (lecture seule)."""
+    distro = str(distro or "").strip().lower()
+    if distro not in SPECS:
+        return _data({"success": False, "error": "Distribution non prise en charge"})
+    path = _log_dir() / ("install-%s.log" % _safe_name(distro))
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return _data({"success": False, "id": distro, "log": "", "error": "Aucun journal d'installation"})
+    text = text[-max(1000, int(maximum)):]
+    return _data({"success": True, "id": distro, "path": str(path), "log": text})
+
+
+def _proot_env(libs, tmp, extra=None):
+    env = os.environ.copy()
+    env.update({"PROOT_LOADER": str(libs / "proot-loader"), "PROOT_TMP_DIR": str(tmp),
+                "PROOT_NO_SECCOMP": "1", "LD_LIBRARY_PATH": str(libs) + ":" + str(_NATIVE_LIB_DIR),
+                "TMPDIR": str(tmp), "HOME": "/root",
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOSTNAME": "nemesis", "DEBIAN_FRONTEND": "noninteractive",
+                # PRoot note ses diagnostics à partir du niveau 1 : on le force
+                # pour que les messages du moteur soient toujours capturés.
+                "PROOT_VERBOSE": "1"})
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _ensure_native_libs():
+    """Copie les bibliothèques PRoot de l'APK vers le dossier de travail."""
     native_dir = Path(_NATIVE_LIB_DIR)
+    data_dir = Path(_FILES_DIR) / "nemesis-linux"
     libs = data_dir / "libs"
-    tmp = data_dir / "tmp" / ("bootstrap-" + str(distro))
-    libs.mkdir(parents=True, exist_ok=True); tmp.mkdir(parents=True, exist_ok=True)
+    tmp = data_dir / "tmp"
+    libs.mkdir(parents=True, exist_ok=True)
+    tmp.mkdir(parents=True, exist_ok=True)
     for name in ("libproot.so", "libproot-loader.so", "libtalloc.so", "libandroid-shmem.so"):
         source = native_dir / name
-        if not source.is_file(): raise RuntimeError("Bibliothèque PRoot absente: " + name)
+        if not source.is_file():
+            raise RuntimeError("Bibliothèque PRoot absente: " + name)
         target = libs / ("proot-loader" if name == "libproot-loader.so" else name)
-        if not target.exists() or target.stat().st_size != source.stat().st_size: shutil.copyfile(source, target)
+        if not target.exists() or target.stat().st_size != source.stat().st_size:
+            shutil.copyfile(source, target)
         os.chmod(target, 0o700 if name in ("libproot.so", "libproot-loader.so") else 0o600)
-    if not (libs / "libtalloc.so.2").exists(): os.symlink("libtalloc.so", str(libs / "libtalloc.so.2"))
+    versioned = libs / "libtalloc.so.2"
+    if not versioned.exists():
+        os.symlink("libtalloc.so", str(versioned))
+    return libs, tmp
+
+
+def _guest_args(guest, command, libs, extra_args=()):
+    args = [str(libs / "libproot.so"), "-0", "-r", str(guest),
+            "-b", "/dev/null", "-b", "/dev/zero", "-b", "/dev/urandom", "-b", "/dev/random",
+            "-b", "/proc", "-b", "/sys", "-w", "/root"]
+    args.extend(extra_args)
+    args.extend(["/bin/sh", "-c", command])
+    return args
+
+
+def _run_guest(guest, command, timeout=1800, label="guest", libs=None, tmp=None, extra_args=(),
+               distro="guest"):
+    """Exécute une commande dans le guest et rend (code de sortie, sortie complète)."""
+    if libs is None or tmp is None:
+        libs, tmp = _ensure_native_libs()
+    env = _proot_env(libs, tmp)
+    args = _guest_args(guest, command, libs, extra_args)
+    try:
+        completed = subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   timeout=timeout, check=False)
+        output = completed.stdout.decode("utf-8", "replace")
+        code = completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        output += "\n[ délai dépassé après %s s ]" % timeout
+        code = -1
+    _append_log(distro, label, "$ %s\n%s" % (command[:400], output))
+    return code, output
+
+
+def _download_to(url, target, expected_sha256=""):
+    """Télécharge un paquet depuis l'HÔTE (Python + certifi) et vérifie son SHA-256."""
+    request = urllib.request.Request(url, headers={"User-Agent": "NEMESIS-Android/PRoot",
+                                                   "Accept-Encoding": "identity"})
+    digest = hashlib.sha256()
+    temporary = str(target) + ".part"
+    with urllib.request.urlopen(request, timeout=90,
+                                context=ssl.create_default_context(cafile=certifi.where())) as response:
+        with open(temporary, "wb") as output:
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                digest.update(chunk)
+    if expected_sha256:
+        actual = digest.hexdigest()
+        if actual.lower() != expected_sha256.lower():
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise RuntimeError("SHA-256 inattendu pour %s" % os.path.basename(str(target)))
+    os.replace(temporary, str(target))
+
+
+def _parse_uris(output):
+    """Extrait (url, nom, taille, sha256) des lignes « --print-uris » d'apt."""
+    found = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        match = _URI_LINE.match(line)
+        if not match:
+            continue
+        url, name, size, sha = match.group(1), match.group(2), int(match.group(3)), match.group(4)
+        found.append((url, name, size, sha))
+    return found
+
+
+def _prepare_debian_packages(guest, progress=None):
+    """Télécharge les paquets Debian depuis l'HÔTE et les place dans le cache apt.
+
+    Pourquoi : le guest n'a plus besoin de faire de HTTP ni de TLS. Le
+    téléchargement utilise le Python de l'application et son bundle certifi,
+    c'est-à-dire la même chaîne qui télécharge déjà le rootfs et qui fonctionne
+    sur toutes les ABIs. L'installation se fait ensuite hors-ligne dans le
+    guest (`apt-get install --no-download`), ce qui supprime le chemin réseau
+    — et donc le syscall en échec — au moment où dpkg/apt écrivent dans
+    /var/cache/apt/archives.
+
+    Rend un dictionnaire de diagnostic ; `ok` vaut False si le chemin hors-ligne
+    est indisponible (l'appelant retombe alors sur l'installation en ligne).
+    """
+    options = "-o APT::Sandbox::User=root -o Acquire::Retries=2"
+    if progress:
+        progress("packages", 70, "Mise à jour des index Debian (dans le guest)…")
+    code, output = _run_guest(guest, "apt-get %s update" % options, timeout=900, label="apt-update",
+                              distro="debian")
+    if code != 0:
+        return {"ok": False, "stage": "apt-update", "detail": output[-1500:]}
+    if progress:
+        progress("packages", 72, "Calcul de la liste des paquets à télécharger…")
+    code, output = _run_guest(
+        guest,
+        "apt-get %s --print-uris -y install %s" % (options, " ".join(PACKAGES["debian"])),
+        timeout=900, label="apt-uris", distro="debian")
+    if code != 0:
+        return {"ok": False, "stage": "apt-uris", "detail": output[-1500:]}
+    uris = _parse_uris(output)
+    if not uris:
+        return {"ok": False, "stage": "apt-uris", "detail": output[-1500:]}
+    archives = Path(guest) / "var" / "cache" / "apt" / "archives"
+    archives.mkdir(parents=True, exist_ok=True)
+    (archives / "partial").mkdir(parents=True, exist_ok=True)
+    downloaded = 0
+    failures = []
+    for index, (url, name, size, sha) in enumerate(uris, 1):
+        if not _valid_deb_uri(url, name, size, sha):
+            failures.append("métadonnées APT invalides ou chemin de paquet interdit")
+            continue
+        target = archives / name
+        try:
+            if _cached_deb_matches(target, size, sha):
+                downloaded += 1
+                continue
+            # A wrong-size, corrupt, or symlink cache entry is never trusted.
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            _download_to(url, target, sha)
+            if not _cached_deb_matches(target, size, sha):
+                raise RuntimeError("Taille ou SHA-256 incorrect après téléchargement")
+            downloaded += 1
+        except Exception as exc:
+            failures.append("%s : %s" % (name, str(exc)[:90]))
+        if progress and (index % 5 == 0 or index == len(uris)):
+            progress("packages", 72 + int(3 * index / max(1, len(uris))),
+                     "Paquets téléchargés par l’hôte : %d / %d" % (downloaded, len(uris)))
+    return {"ok": downloaded > 0 and not failures, "downloaded": downloaded, "total": len(uris),
+            "failures": failures[:5]}
+
+
+def _proot_self_test(guest, distro="guest"):
+    """Teste les primitives PRoot essentielles et rend le résultat (lecture/écriture).
+
+    Objectif : distinguer un problème réseau d'un problème de traduction de
+    chemins par PRoot, qui se manifestent tous deux par « 14: Bad address ».
+    """
+    script = ("cd /tmp || exit 1; "
+              "echo nemesis > nemesis-selftest.txt 2>/dev/null || echo FAIL:write; "
+              "cat nemesis-selftest.txt >/dev/null 2>&1 || echo FAIL:read; "
+              "chmod 0644 nemesis-selftest.txt 2>/dev/null || echo FAIL:chmod; "
+              "chown 0:0 nemesis-selftest.txt 2>/dev/null || echo FAIL:chown; "
+              "mv nemesis-selftest.txt nemesis-selftest2.txt 2>/dev/null || echo FAIL:rename; "
+              "ln -s nemesis-selftest2.txt nemesis-selftest-link 2>/dev/null || echo FAIL:symlink; "
+              "rm -f nemesis-selftest2.txt nemesis-selftest-link; "
+              "(getent hosts deb.debian.org >/dev/null 2>&1 && echo OK:dns) || echo FAIL:dns; "
+              "command -v wget >/dev/null 2>&1 && "
+              "(wget -q -T 20 -O /dev/null https://deb.debian.org/debian/ && echo OK:https) || echo SKIP:https")
+    code, output = _run_guest(guest, script, timeout=180, label="self-test", distro=distro)
+    results = {"exit_code": code}
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith("FAIL:") or line.startswith("OK:") or line.startswith("SKIP:"):
+            state, _, name = line.partition(":")
+            results[name.strip()] = state.strip().lower()
+    return results
+
+
+def _bootstrap_tools(distro, guest, progress=None):
+    """Install a usable toolchain and the app-managed nemesis account in a rootfs."""
+    libs, base_tmp = _ensure_native_libs()
+    tmp = base_tmp / ("bootstrap-" + str(distro))
+    tmp.mkdir(parents=True, exist_ok=True)
     resolver = guest / "etc/resolv.conf"
     try: resolver.unlink()
     except FileNotFoundError: pass
     dns = [x.strip() for x in _DNS_SERVERS.split(",") if x.strip()]
     if dns: resolver.write_text("".join("nameserver " + x + "\n" for x in dns), encoding="ascii")
-    env = os.environ.copy()
-    env.update({"PROOT_LOADER": str(libs / "proot-loader"), "PROOT_TMP_DIR": str(tmp), "PROOT_NO_SECCOMP": "1",
-                "LD_LIBRARY_PATH": str(libs) + ":" + str(native_dir), "TMPDIR": str(tmp),
-                "HOME": "/root", "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "HOSTNAME": "nemesis", "DEBIAN_FRONTEND": "noninteractive"})
+    env = _proot_env(libs, tmp)
     if distro == "alpine":
         create_user="(id nemesis >/dev/null 2>&1 || adduser -D -s /bin/sh -h /home nemesis)"
     elif distro == "debian":
@@ -326,12 +638,24 @@ def _bootstrap_tools(distro, guest, progress=None):
               "(grep -Fq '@includedir /etc/sudoers.d' /etc/sudoers || printf '\\n@includedir /etc/sudoers.d\\n' >> /etc/sudoers) && chmod 0440 /etc/sudoers && "
               "visudo -c >/dev/null")
     if distro == "alpine":
-        command = ("apk update && apk add --no-cache bash ca-certificates curl git python3 py3-pip py3-virtualenv nodejs npm openssh-client-default "
-                   "sudo shadow coreutils findutils grep sed tar && " + identity + " && rm -rf /var/cache/apk/*")
+        # HTTPS d'abord. En cas d'échec de vérification de certificat (erreur
+        # constatée sur certains appareils 32 bits), on rejoue une fois avec le
+        # miroir en HTTP : les paquets restent vérifiés par la SIGNATURE apk,
+        # seule l'authentification du transport est abandonnée. Le journal
+        # d'installation conserve les deux sorties.
+        alpine_packages = " ".join(PACKAGES["alpine"])
+        fallback = ("sed -i 's|https://|http://|g' /etc/apk/repositories && apk update")
+        command = ("(apk update || (" + fallback + ")) && apk add --no-cache " + alpine_packages +
+                   " && " + identity + " && rm -rf /var/cache/apk/*")
     elif distro == "debian":
-        apt_opts="-o APT::Sandbox::User=root -o Acquire::Retries=3"
-        command = ("apt-get " + apt_opts + " update && apt-get " + apt_opts + " install -y --no-install-recommends bash ca-certificates curl git python3 python3-pip python3-venv nodejs npm "
-                   "openssh-client sudo passwd zip unzip coreutils findutils grep sed tar && " + identity + " && apt-get " + apt_opts + " clean && rm -rf /var/lib/apt/lists/*")
+        # Installation hors-ligne : les paquets ont été téléchargés par l'HÔTE
+        # et déposés dans /var/cache/apt/archives. Le guest n'a plus de réseau
+        # à ce stade. Si un paquet manque (cache incomplet), on repasse en ligne.
+        apt_opts = "-o APT::Sandbox::User=root -o Acquire::Retries=3"
+        debian_packages = " ".join(PACKAGES["debian"])
+        command = ("(apt-get " + apt_opts + " install -y --no-download --no-install-recommends " + debian_packages +
+                   " || apt-get " + apt_opts + " install -y --no-install-recommends " + debian_packages +
+                   ") && " + identity + " && apt-get " + apt_opts + " clean && rm -rf /var/lib/apt/lists/*")
     else:
         raise ValueError("Distribution non prise en charge")
     # The app's current Mozilla CA set is newer than some architecture-specific
@@ -346,21 +670,35 @@ def _bootstrap_tools(distro, guest, progress=None):
     completed = subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                timeout=1800, check=False)
     output = completed.stdout.decode("utf-8", "replace")
+    log_path = _append_log(distro, "packages", output)
     if completed.returncode != 0:
-        tail = output[-4000:]
-        raise RuntimeError("Installation/configuration des paquets échouée (code %d):\n%s" % (completed.returncode, tail))
+        # On conserve le DÉBUT de la sortie : les diagnostics de PRoot
+        # (« Detected broken PTRACE_POKEDATA », « ptrace(POKEDATA) »…) y sont
+        # écrits, alors qu'ils étaient systématiquement coupés par la seule
+        # conservation des 4 000 derniers caractères.
+        raise RuntimeError(
+            "Installation/configuration des paquets échouée (code %d).\n"
+            "Journal complet : %s\n\n--- début de la sortie ---\n%s\n--- fin de la sortie ---\n%s" % (
+                completed.returncode, log_path or "(non écrit)", output[:3000], output[-3000:]))
     verify_command=("command -v git python3 node npm sudo >/dev/null && "
                     "grep -qx nemesis /etc/hostname && id nemesis && "
                     "printf 'nemesis123\\n' | su -s /bin/sh -c 'sudo -S -p NEMESIS_PROMPT id -un' nemesis")
     verify = subprocess.run(args[:-3] + ["/bin/sh", "-c", verify_command], env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
+    verify_output = verify.stdout.decode("utf-8", "replace")
+    _append_log(distro, "verify", verify_output)
     if verify.returncode != 0:
         raise RuntimeError("Vérification post-installation (outils/hostname/compte/sudo) échouée (code %d):\n%s" %
-                           (verify.returncode, verify.stdout.decode("utf-8", "replace")[-2500:]))
+                           (verify.returncode, verify_output[-2500:]))
     if progress: progress("verify",96,"Outils, hostname nemesis et accès sudo vérifiés.")
 
 
 def install(distro):
+    """Installe une distribution : téléchargement, extraction, paquets, configuration.
+
+    Le rootfs téléchargé est conservé en cas d'échec de l'étape « paquets » :
+    le prochain essai reprend au stage des paquets, sans retélécharger l'archive.
+    """
     distro=str(distro or "").strip().lower()
     _set_install_progress(distro,"starting",1,"Vérification de l’architecture et de l’espace…")
     try:
@@ -380,19 +718,32 @@ def install(distro):
             result=json.loads(status(distro));result["tools_updated"]=True
             _set_install_progress(distro,"complete",100,"Outils et compte nemesis configurés.")
             return _data(result)
-        if target.exists() or target.is_symlink():
-            raise ValueError("Installation existante incomplète; fichiers conservés. Supprimez cette distribution puis réessayez.")
-        url, filename = _archive_url(distro, spec, arch)
-        partial = base / (filename + ".part")
         staging = base / (spec["root"] + "-" + arch + ".installing")
         archive_bytes = 0
-        request = urllib.request.Request(url, headers={"User-Agent": "NEMESIS-Android/PRoot", "Accept-Encoding":"identity"})
         with _ROOTFS_LOCK:
-            if _is_ready(target, spec["version"]):
-                _set_install_progress(distro,"complete",100,"Environnement déjà installé et vérifié.")
-                return status(distro)
-            if staging.exists(): shutil.rmtree(staging)
-            try:
+            # ---- réutilisation d'un rootfs déjà extrait ----------------------
+            reusable = staging.exists() and (staging/"bin/sh").exists() and (staging/"etc").is_dir()
+            if reusable and (target.exists() or target.is_symlink()):
+                raise RuntimeError(
+                    "Le rootfs cible et le staging de reprise existent tous deux ; "
+                    "aucun fichier n’a été supprimé. Le staging est conservé.")
+            if not reusable:
+                if target.exists() or target.is_symlink():
+                    # Un rootfs extrait mais jamais finalisé est repris plutôt
+                    # que rejeté : l'utilisateur n'a plus à le supprimer à la main.
+                    if target.is_dir() and (target/"bin/sh").exists() and (target/"etc").is_dir():
+                        _set_install_progress(distro,"packages",70,"Rootfs déjà téléchargé : reprise de la configuration…")
+                        _bootstrap_tools(distro,target,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
+                        (target/".nemesis-rootfs-ready").write_text(
+                            "%s %d\n"%(spec["version"],_installed_size(target)),encoding="utf-8")
+                        _mark_toolchain_ready(target)
+                        result=json.loads(status(distro));result["resumed"]=True
+                        _set_install_progress(distro,"complete",100,"Installation reprise et terminée.")
+                        return _data(result)
+                    raise ValueError("Installation existante incomplète; fichiers conservés. Supprimez cette distribution puis réessayez.")
+                url, filename = _archive_url(distro, spec, arch)
+                partial = base / (filename + ".part")
+                request = urllib.request.Request(url, headers={"User-Agent": "NEMESIS-Android/PRoot", "Accept-Encoding":"identity"})
                 _set_install_progress(distro,"download",3,"Connexion à la source officielle…",downloaded_bytes=0,total_bytes=0)
                 with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context(cafile=certifi.where())) as response:
                     total=int(response.headers.get("Content-Length") or 0)
@@ -409,36 +760,77 @@ def install(distro):
                 archive_bytes=partial.stat().st_size
                 _set_install_progress(distro,"verify",51,"Vérification SHA-256…",downloaded_bytes=archive_bytes,total_bytes=archive_bytes)
                 actual_hash=_sha256(partial)
-                if actual_hash!=checksum: raise ValueError("Vérification SHA-256 échouée; archive téléchargée refusée.")
+                if actual_hash!=checksum:
+                    partial.unlink(missing_ok=True)
+                    raise ValueError("Vérification SHA-256 échouée; archive téléchargée refusée.")
                 def extraction_progress(done,total):
                     percent=54+int(19*done/max(1,total))
                     _set_install_progress(distro,"extract",percent,"Extraction sécurisée : %d / %d entrées"%(done,total))
                 _set_install_progress(distro,"extract",53,"Extraction sécurisée du rootfs…")
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
                 _extract_archive(partial,staging,spec["strip"],spec["mode"],extraction_progress)
-                _bootstrap_tools(distro,staging,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
-                shell=staging/"bin/sh"
-                if not (shell.is_file() or shell.is_symlink()) or not (staging/"etc").is_dir():
-                    raise ValueError("Rootfs invalide après extraction : /bin/sh ou /etc absent.")
-                actual_size=_installed_size(staging)
-                (staging/".nemesis-rootfs-ready").write_text("%s %d\n"%(spec["version"],actual_size),encoding="utf-8")
-                _set_install_progress(distro,"finalize",98,"Vérification finale et activation…")
-                os.replace(staging,target)
-            finally:
-                for path in (partial,staging):
-                    try:
-                        if path.is_dir() and not path.is_symlink(): shutil.rmtree(path)
-                        else: path.unlink()
-                    except FileNotFoundError: pass
+                try: partial.unlink()
+                except OSError: pass
+            # ---- magasin de certificats et résolution -----------------------
+            # Le bundle CA de l'application et les adresses des miroirs Debian
+            # doivent être en place AVANT toute requête du guest : sinon
+            # l'index apt est lu avec le vieux magasin du rootfs.
+            try:
+                _seed_guest_ca_bundle(staging)
+            except Exception as exc:
+                _append_log(distro,"ca-bundle","echec: "+str(exc)[:200])
+            if distro == "debian":
+                try:
+                    _prime_debian_mirror_hosts(staging)
+                except Exception as exc:
+                    _append_log(distro,"mirror-hosts","echec: "+str(exc)[:200])
+
+            # ---- diagnostics PRoot ------------------------------------------
+            _set_install_progress(distro,"packages",68,"Test des primitives PRoot (fichiers, DNS)…")
+            try:
+                selftest=_proot_self_test(staging, distro)
+            except Exception as exc:
+                selftest={"error":str(exc)[:200]}
+            _append_log(distro,"self-test",str(selftest))
+            # Une primitive fondamentale en échec (écriture ou lecture) signifie
+            # que PRoot ne peut pas faire tourner le guest sur cet appareil :
+            # inutile de lancer l'installation des paquets, on s'arrête ici avec
+            # le nom exact de la primitive fautive.
+            broken=[name for name in ("write","read","chmod","rename") if selftest.get(name)=="fail"]
+            if broken:
+                raise RuntimeError(
+                    "PRoot ne peut pas exécuter le guest sur cet appareil : primitive(s) en échec : %s. "
+                    "Le journal complet (diagnostics du moteur PRoot) est conservé sur l'appareil." % ", ".join(broken))
+            # ---- paquets ---------------------------------------------------
+            offline={}
+            if distro=="debian":
+                offline=_prepare_debian_packages(staging,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
+                _append_log(distro,"offline-packages",str(offline))
+                if not offline.get("ok"):
+                    _set_install_progress(distro,"packages",74,"Téléchargement hors-ligne indisponible : installation en ligne…")
+            _bootstrap_tools(distro,staging,lambda phase,p,detail:_set_install_progress(distro,phase,p,detail))
+            shell=staging/"bin/sh"
+            if not (shell.is_file() or shell.is_symlink()) or not (staging/"etc").is_dir():
+                raise ValueError("Rootfs invalide après extraction : /bin/sh ou /etc absent.")
+            actual_size=_installed_size(staging)
+            (staging/".nemesis-rootfs-ready").write_text("%s %d\n"%(spec["version"],actual_size),encoding="utf-8")
+            _set_install_progress(distro,"finalize",98,"Vérification finale et activation…")
+            # Never remove or replace an existing rootfs: it may contain user data.
+            _activate_rootfs(staging, target)
+            _mark_toolchain_ready(target)
         result=json.loads(status(distro))
         result.update({"installed":True,"downloaded_bytes":archive_bytes,
-                       "actual_installed_bytes":_installed_size_cached(target,spec["version"])})
+                       "actual_installed_bytes":_installed_size_cached(target,spec["version"]),
+                       "self_test":selftest,"offline_packages":offline})
         _set_install_progress(distro,"complete",100,"Installation et vérification terminées.")
         return _data(result)
     except Exception as exc:
         trace=traceback.format_exc()
-        message=(str(exc)+"\n\nDiagnostic complet :\n"+trace[-7000:])[:9000]
+        log=str(_log_dir() / ("install-%s.log" % distro))
+        message=(str(exc)+"\n\nJournal d’installation : "+log+"\n\nDiagnostic complet :\n"+trace[-7000:])[:9000]
         _set_install_progress(distro,"error",100,"Échec : "+str(exc)[:250],error=message)
-        return _data({"success":False,"installed":False,"error":message})
+        return _data({"success":False,"installed":False,"error":message,"log":log})
 
 
 def remove(distro):

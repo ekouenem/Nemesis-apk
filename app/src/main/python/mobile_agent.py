@@ -1019,6 +1019,11 @@ def environment_install_progress(name):
     return proot_runtime.installation_progress(str(name or '').strip().lower())
 
 
+def environment_install_log(name):
+    """Journal d'installation PRoot (lecture seule) : sortie complète et diagnostics."""
+    return proot_runtime.install_log(str(name or '').strip().lower())
+
+
 def environment_remove(name):
     name = str(name or '').strip().lower()
     if name not in proot_runtime.DISTRIBUTIONS:
