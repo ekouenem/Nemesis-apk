@@ -1,5 +1,14 @@
 # Notes de version — NEMESIS Android
 
+## v0.1.0-beta.16 — correctifs Projets, workspace et PRoot
+
+- Projets : envoyer le premier message d'une discussion de projet ne renvoie plus « Renommage impossible : Journal de migration invalide ». Une discussion rattachée à un projet ne renomme plus que son titre, puisque toutes ses discussions partagent le dossier du projet. La discussion est bien créée et titrée, le message est transmis.
+- Workspace : un fichier importé apparaît désormais immédiatement dans l'interface. Le dossier du workspace est réservé, créé et marqué initialisé avant l'écriture (nouvelle API `workspace_prepare`), ce qui évite l'allocation d'un dossier « (2) » vide qui masquait le fichier importé.
+- PRoot : `download_file` fonctionne aussi pour l'environnement PRoot (Alpine/Debian) et plus seulement en SSH. Le rootfs PRoot vit sur le stockage Android : `/workspace` correspond directement au dossier de la discussion, et un fichier créé ailleurs (par ex. `/root`, `/tmp`) est copié dans le dossier local. Le prompt de l'agent explique désormais cette correspondance.
+- Barre latérale réorganisée : navigation verticale claire et non empilée, en trois sections (Navigation : Agent, Code, Projets ; Discussions ; Outils : Automatisations, Connecteurs, Fichiers, Paramètres), identique en tiroir mobile et en sidebar large. La liste des discussions inclut désormais les discussions Code avec une étiquette de mode.
+- Validation : 93 tests Python réussis (dont des tests de régression pour les trois correctifs), `py_compile` et `git diff --check` réussis, compilation release réussie pour ARMv7, ARM64, x86 et x86_64. Les correctifs ont été vérifiés sur émulateur x86 Android 8.1.
+- APK signée avec la clé debug du projet, pas une clé de production.
+
 ## v0.1.0-beta.15 — correctifs d'installation PRoot
 
 - Debian : téléchargement hôte des paquets APT avec validation du SHA-256 attendu, y compris pour les archives déjà en cache ; rejet des URI et noms de fichiers invalides.

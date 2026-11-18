@@ -910,6 +910,57 @@ def execute(command, timeout_seconds=120, workspace="", distro="alpine"):
 _TERMINAL_SESSIONS = {}
 _TERMINAL_SESSIONS_LOCK = threading.RLock()
 
+#: Guest paths backed by host mounts; they are never read from the rootfs.
+_SYNTHETIC_BINDS = ("/proc", "/sys", "/dev")
+
+
+def guest_path(distro, remote_path, workspace=""):
+    """Map an absolute path inside a PRoot guest to a real host path.
+
+    ``/workspace`` is bind-mounted to the discussion workspace while commands
+    run, so it maps to ``workspace``. Every other guest path lives inside the
+    rootfs directory on Android storage. Synthetic ``/proc``, ``/sys`` and
+    ``/dev`` mounts are refused. Returns a host ``Path`` without copying.
+    """
+    distro, spec, (arch, _) = _spec(distro)
+    guest = _target_path(distro)
+    if not _is_ready(guest, spec["version"]):
+        raise ValueError("Cette distribution n'est pas installée")
+    raw = str(remote_path or "").strip()
+    if not raw or len(raw) > 1000 or any(ord(c) < 32 for c in raw):
+        raise ValueError("Chemin distant invalide")
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ValueError("Utilise un chemin absolu dans l'environnement PRoot")
+    parts = path.parts
+    if len(parts) > 1 and ("/" + parts[1]) in _SYNTHETIC_BINDS:
+        raise ValueError("Ce chemin système ne peut pas être exporté")
+    guest_root = guest.resolve()
+    if path == Path("/workspace") or Path("/workspace") in path.parents:
+        root = Path(workspace).resolve() if workspace else (Path(_FILES_DIR) / "workspace").resolve()
+        target = (root / path.relative_to("/workspace")).resolve()
+        if target != root and root not in target.parents:
+            raise ValueError("Chemin hors de l'espace de travail")
+        return target
+    target = (guest_root / path.relative_to("/")).resolve()
+    if target != guest_root and guest_root not in target.parents:
+        raise ValueError("Chemin hors de l'environnement PRoot")
+    return target
+
+
+def export_file(distro, remote_path, destination, workspace=""):
+    """Copy a file created inside the guest to a host destination (Android)."""
+    source = guest_path(distro, remote_path, workspace)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Fichier introuvable dans l'environnement")
+    size = source.stat().st_size
+    if size > 100 * 1024 * 1024:
+        raise ValueError("Fichier limité à 100 Mo")
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    return {"success": True, "path": str(target), "size": size, "executor": "proot"}
+
 
 def terminal_start(distro, workspace="", columns=80, rows=24):
     import fcntl, pty, struct, termios, uuid

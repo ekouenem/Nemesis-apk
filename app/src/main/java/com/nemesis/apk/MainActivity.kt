@@ -356,6 +356,28 @@ class MainActivity : Activity() {
         }
         return outer
     }
+private fun sidebarSection(title:String):View = label(title,9.5f,muted,true).apply {
+        setPadding(dp(10),dp(9),0,dp(2)); letterSpacing=.06f
+    }
+    /** One clean, full-width navigation row: icon chip + label, active pill. */
+    private fun sidebarNavItem(icon:String, title:String, selected:Boolean, compact:Boolean=false, click:()->Unit):View {
+        val height=if(compact) 36 else 42
+        val row=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL
+            background=if(selected) shape(pale,11) else null; isClickable=true; isFocusable=true
+            contentDescription=title; setPadding(dp(4),dp(2),dp(8),dp(2))
+        }
+        val chipSize=if(compact) 26 else 29
+        row.addView(label(icon,if(compact) 14f else 15.5f,if(selected) primary else muted,true).apply {
+            gravity=Gravity.CENTER; background=shape(if(selected) white else canvas,8)
+        },LinearLayout.LayoutParams(dp(chipSize),dp(chipSize)))
+        row.addView(label(title,if(compact) 12.5f else 13.5f,if(selected) primary else strong,selected).apply {
+            maxLines=1; ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(dp(10),0,0,0)
+        },LinearLayout.LayoutParams(0,-2,1f))
+        if(selected) row.addView(label("●",9f,primary,true).apply { setPadding(0,0,dp(4),0) })
+        row.setOnClickListener { click() }
+        return row.apply { layoutParams=LinearLayout.LayoutParams(-1,dp(height)) }
+    }
     private fun expandedSidebar():View {
         val panel=column().apply { setBackgroundColor(sidebar); setPadding(dp(12),dp(10),dp(10),dp(8)) }
         val brand=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
@@ -363,36 +385,27 @@ class MainActivity : Activity() {
         brand.addView(column().apply { setPadding(dp(8),0,0,0); addView(label("NEMESIS",13f,strong,true)); addView(label("Votre espace IA",9.5f,muted)) },LinearLayout.LayoutParams(0,-2,1f))
         panel.addView(brand); panel.addView(gap(7))
         val search=EditText(this).apply { hint="Rechercher une discussion"; textSize=12f; setSingleLine(true); setTextColor(strong); setHintTextColor(muted); background=shape(white,11,line); setPadding(dp(10),0,dp(10),0); minHeight=dp(38); contentDescription="Rechercher une discussion" }
-        panel.addView(search); panel.addView(gap(5))
-        fun navCell(title:String,selected:Boolean,click:()->Unit):TextView = action(title,if(selected)pale else Color.TRANSPARENT,if(selected)primary else strong,click).apply {
-            textSize=10.5f; minHeight=dp(34); setPadding(dp(4),0,dp(4),0); gravity=Gravity.CENTER; maxLines=1; isAllCaps=false
-        }
-        fun navRow(entries:List<Triple<String,Boolean,()->Unit>>) {
-            val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
-            entries.forEachIndexed { index,entry ->
-                row.addView(navCell(entry.first,entry.second,entry.third),LinearLayout.LayoutParams(0,dp(34),1f))
-                if(index<entries.lastIndex) row.addView(View(this),LinearLayout.LayoutParams(dp(3),1))
-            }
-            panel.addView(row); panel.addView(gap(3))
-        }
-        navRow(listOf(Triple("Agent",(screen=="home"&&newConversationMode!="code")||(screen=="chat"&&currentMode=="work"),{showHome("work")} ),Triple("Code",(screen=="home"&&newConversationMode=="code")||(screen=="chat"&&currentMode=="code"),{showHome("code")} ),Triple("Projets",screen=="projects"||screen=="project",{showProjects()})))
-        navRow(listOf(Triple("Automatisations",screen=="automations",{showAutomations()}),Triple("Connecteurs",screen=="connectors",{showConnectors()})))
-        panel.addView(action("＋  Nouvelle discussion",pale,primary){create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=11.5f}); panel.addView(gap(4))
-        panel.addView(label("DISCUSSIONS",9.5f,muted,true)); panel.addView(gap(2))
+        panel.addView(search); panel.addView(gap(6))
+        panel.addView(action("+  Nouvelle discussion",primary,white){create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=12f}); panel.addView(gap(4))
+        panel.addView(sidebarSection("NAVIGATION"))
+        addSidebarNavigation(panel) {}
+        panel.addView(sidebarSection("DISCUSSIONS"))
         val list=column(); val listScroll=ScrollView(this).apply { isFillViewport=true; addView(list) }
         panel.addView(listScroll,LinearLayout.LayoutParams(-1,0,1f))
         fun refresh(query:String) {
             list.removeAllViews(); val sessions=JSONArray(try{py.callAttr("list_sessions").toString()}catch(_:Exception){"[]"}); var shown=0
             for(i in 0 until sessions.length()) {
                 val item=sessions.optJSONObject(i)?:continue
-                if(item.optString("mode")!="work" || !item.isNull("project_id")) continue
+                if(!item.isNull("project_id")) continue
+                val itemMode=item.optString("mode"); if(itemMode!="work" && itemMode!="code") continue
                 val title=item.optString("title"); if(!title.contains(query,true))continue; shown++
                 val id=item.optString("id")
                 val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; background=shape(if(id==currentSession)pale else Color.TRANSPARENT,9) }
                 val text=column().apply {
                     setPadding(dp(7),dp(4),dp(2),dp(4))
                     addView(label(title,11.5f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END})
-                    if(item.optInt("pinned")==1) addView(label("Épinglée",9f,muted))
+                    val tag=buildList{ add(modeName(itemMode)); if(item.optInt("pinned")==1) add("Épinglée"); if(item.optInt("uncertain")==1) add("À vérifier") }.joinToString(" · ")
+                    addView(label(tag,9.5f,muted))
                     isClickable=true;isFocusable=true;setOnClickListener{showChat(id)}
                     setOnLongClickListener{sessionOptions(item);true}
                 }
@@ -404,8 +417,29 @@ class MainActivity : Activity() {
         }
         refresh(""); search.addTextChangedListener(object:TextWatcher{override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){refresh(s?.toString()?:"")};override fun afterTextChanged(s:Editable?){}})
         panel.addView(separator())
-        navRow(listOf(Triple("Fichiers",screen=="files",{showFiles()}),Triple("Paramètres",screen=="settings",{showSettings()})))
+        addSidebarSecondaryNavigation(panel) {}
         return panel
+    }
+    /** Primary spaces, one clear row each, in a stable order. */
+    private fun addSidebarNavigation(panel:LinearLayout, dismiss:()->Unit) {
+        fun item(icon:String,title:String,selected:Boolean,click:()->Unit) {
+            panel.addView(sidebarNavItem(icon,title,selected,false){dismiss();click()})
+            panel.addView(gap(1))
+        }
+        item("◉","Agent",(screen=="home"&&newConversationMode!="code")||(screen=="chat"&&currentMode=="work"&&currentProjectId==null)){showHome("work")}
+        item("⌘","Code",(screen=="home"&&newConversationMode=="code")||(screen=="chat"&&currentMode=="code"&&currentProjectId==null)){showHome("code")}
+        item("▦","Projets",screen=="projects"||screen=="project"||(screen=="chat"&&currentProjectId!=null)){showProjects()}
+    }
+    /** Secondary tools, compact but still one per row; no cramped tab cells. */
+    private fun addSidebarSecondaryNavigation(panel:LinearLayout, dismiss:()->Unit) {
+        panel.addView(sidebarSection("OUTILS"))
+        fun item(icon:String,title:String,selected:Boolean,click:()->Unit) {
+            panel.addView(sidebarNavItem(icon,title,selected,true){dismiss();click()})
+        }
+        item("◷","Automatisations",screen=="automations"){showAutomations()}
+        item("⇄","Connecteurs",screen=="connectors"){showConnectors()}
+        item("▤","Fichiers",screen=="files"){showFiles()}
+        item("⚙","Paramètres",screen=="settings"){showSettings()}
     }
     private fun separator() = View(this).apply { setBackgroundColor(line); layoutParams = LinearLayout.LayoutParams(-1,dp(1)) }
     private fun scrollArea(pad: Int = 18): Pair<ScrollView,LinearLayout> {
@@ -494,27 +528,22 @@ class MainActivity : Activity() {
         brand.addView(action("×",Color.TRANSPARENT,muted){closeDrawer()}.apply{textSize=20f;contentDescription="Fermer le menu"},LinearLayout.LayoutParams(dp(38),dp(38)))
         menu.addView(brand);menu.addView(gap(7))
         val search=EditText(this).apply{hint="Rechercher une discussion";textSize=12f;setSingleLine(true);setTextColor(strong);setHintTextColor(muted);background=shape(white,11,line);setPadding(dp(10),0,dp(10),0);minHeight=dp(38);contentDescription="Rechercher une discussion"}
-        menu.addView(search);menu.addView(gap(5))
-        fun navCell(title:String,click:()->Unit):TextView=action(title,Color.TRANSPARENT,strong,click).apply{textSize=10.5f;minHeight=dp(34);setPadding(dp(3),0,dp(3),0);gravity=Gravity.CENTER;maxLines=1}
-        fun navRow(entries:List<Pair<String,()->Unit>>) {
-            val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
-            entries.forEachIndexed{index,e->row.addView(navCell(e.first,e.second),LinearLayout.LayoutParams(0,dp(34),1f));if(index<entries.lastIndex)row.addView(View(this),LinearLayout.LayoutParams(dp(3),1))}
-            menu.addView(row);menu.addView(gap(2))
-        }
-        navRow(listOf("Agent" to {closeDrawer();showHome("work")},"Code" to {closeDrawer();showHome("code")},"Projets" to {closeDrawer();showProjects()}))
-        navRow(listOf("Automatisations" to {closeDrawer();showAutomations()},"Connecteurs" to {closeDrawer();showConnectors()}))
-        menu.addView(action("＋  Nouvelle discussion",pale,primary){closeDrawer();create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=11.5f});menu.addView(gap(4))
-        menu.addView(label("DISCUSSIONS",9.5f,muted,true));menu.addView(gap(2))
+menu.addView(search);menu.addView(gap(6))
+        menu.addView(action("+  Nouvelle discussion",primary,white){closeDrawer();create("work")}.apply{gravity=Gravity.CENTER;minHeight=dp(38);textSize=12f});menu.addView(gap(4))
+        menu.addView(sidebarSection("NAVIGATION"))
+        addSidebarNavigation(menu) { closeDrawer() }
+        menu.addView(sidebarSection("DISCUSSIONS"))
         val list=column();val scroll=ScrollView(this).apply{addView(list);isFillViewport=true}
         menu.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         fun refresh(query:String){
             list.removeAllViews();val sessions=JSONArray(try{py.callAttr("list_sessions").toString()}catch(_:Exception){"[]"});var shown=0
             for(i in 0 until sessions.length()){
                 val item=sessions.optJSONObject(i)?:continue
-                if(item.optString("mode")!="work" || !item.isNull("project_id"))continue
+                if(!item.isNull("project_id"))continue
+                val itemMode=item.optString("mode");if(itemMode!="work" && itemMode!="code")continue
                 val title=item.optString("title");if(!title.contains(query,true))continue;shown++
                 val id=item.optString("id");val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=shape(if(id==currentSession)pale else Color.TRANSPARENT,9)}
-                val text=column().apply{setPadding(dp(8),dp(5),dp(2),dp(5));addView(label(title,12f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(item.optInt("pinned")==1 || item.optInt("uncertain")==1) addView(label((if(item.optInt("pinned")==1)"Épinglée" else "")+(if(item.optInt("pinned")==1 && item.optInt("uncertain")==1)" · " else "")+(if(item.optInt("uncertain")==1)"À vérifier" else ""),9.5f,muted));isClickable=true;isFocusable=true;setOnClickListener{closeDrawer();showChat(id)};setOnLongClickListener{closeDrawer();sessionOptions(item);true}}
+                val text=column().apply{setPadding(dp(8),dp(5),dp(2),dp(5));addView(label(title,12f,strong,id==currentSession).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});val tag=buildList{add(modeName(itemMode));if(item.optInt("pinned")==1)add("Épinglée");if(item.optInt("uncertain")==1)add("À vérifier")}.joinToString(" · ");addView(label(tag,9.5f,muted));isClickable=true;isFocusable=true;setOnClickListener{closeDrawer();showChat(id)};setOnLongClickListener{closeDrawer();sessionOptions(item);true}}
                 row.addView(text,LinearLayout.LayoutParams(0,-2,1f));row.addView(action("⋯",Color.TRANSPARENT,muted){closeDrawer();sessionOptions(item)}.apply{textSize=19f;contentDescription="Options de la discussion $title"},LinearLayout.LayoutParams(dp(40),dp(40)))
                 list.addView(row)
             }
@@ -522,7 +551,7 @@ class MainActivity : Activity() {
         }
         refresh("");search.addTextChangedListener(object:TextWatcher{override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){refresh(s?.toString()?:"")};override fun afterTextChanged(s:Editable?){}})
         menu.addView(separator())
-        navRow(listOf("Fichiers" to {closeDrawer();showFiles()},"Paramètres" to {closeDrawer();showSettings()}))
+        addSidebarSecondaryNavigation(menu) { closeDrawer() }
         layer.addView(menu,FrameLayout.LayoutParams(width,-1,Gravity.START));host.value?.addView(layer,FrameLayout.LayoutParams(-1,-1));drawer=layer
     }
     private fun showProjects() {
@@ -1384,7 +1413,7 @@ class MainActivity : Activity() {
                     original=original.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\u0000-\\u001F]"),"_").trim().trim('.').take(180).ifBlank { "fichier" }
                     val ext=original.substringAfterLast('.',"").takeIf { it.isNotBlank() && original.contains('.') }
                     val stem=if(ext==null) original else original.dropLast(ext.length+1).ifBlank { "fichier" }
-                    val directory=File(py.callAttr("workspace_root",id).toString()).canonicalFile
+                    val directory=File(py.callAttr("workspace_prepare",id).toString()).canonicalFile
                     if(!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Impossible de préparer le workspace.")
                     if(!directory.isDirectory) throw IllegalStateException("Workspace invalide.")
                     var candidate=File(directory,original); var suffix=2

@@ -755,4 +755,65 @@ class MobileTests(unittest.TestCase):
                 self.assertEqual((target/'home/nemesis/keep.txt').read_text(),'preserve rootfs')
                 self.assertEqual((staging/'bin/sh').read_text(),'staged shell')
 
+    def test_project_discussion_rename_keeps_shared_workspace(self):
+        shared=Path(self.temp.name)/'external'/'Nemesis'
+        m.configure(self.temp.name,8090,'',str(shared))
+        project=json.loads(m.project_create('Projet renommage','code',''))
+        sid=json.loads(m.create_session('code',project['id']))['id']
+        root=m.workspace_root(sid)
+        for title in ('Premier message du projet','Deuxième nom'):
+            result=json.loads(m.rename_session(sid,title))
+            self.assertTrue(result['ok'],result)
+            self.assertEqual(json.loads(m.get_session(sid))['title'],title)
+        self.assertEqual(m.workspace_root(sid),root)
+        self.assertEqual(Path(root),Path(m.project_root(project['id'])))
+        # Sending the first message must not fail on the automatic rename.
+        provider=Mock(); provider.url=None; provider.send_message.return_value={'success':True,'response':'Bonjour'}
+        with patch.object(m,'SessionProvider',return_value=provider):
+            fresh=json.loads(m.create_session('code',project['id']))['id']
+            self.assertTrue(json.loads(m.send(fresh,'Bienvenue dans le projet'))['ok'])
+            self.assertEqual(json.loads(m.get_session(fresh))['title'],'Bienvenue dans le projet')
+
+    def test_workspace_import_folder_stays_stable_and_lists_files(self):
+        shared=Path(self.temp.name)/'external'/'Nemesis'
+        m.configure(self.temp.name,8090,'',str(shared))
+        sid=json.loads(m.create_session('work'))['id']
+        first=m.workspace_root(sid)
+        prepared=m.workspace_prepare(sid)
+        self.assertEqual(first,prepared)
+        (Path(prepared)/'rapport.txt').write_text('contenu')
+        self.assertEqual(m.workspace_root(sid),prepared)
+        self.assertEqual([item['name'] for item in json.loads(m.list_files(sid))],['rapport.txt'])
+        # Preparing twice keeps the same folder instead of allocating a "(2)".
+        self.assertEqual(m.workspace_prepare(sid),prepared)
+        self.assertEqual(m.workspace_root(sid),prepared)
+
+    def test_proot_download_maps_guest_paths(self):
+        import proot_runtime as runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace=Path(tmp)/'workspace'; workspace.mkdir()
+            guest=Path(tmp)/'rootfs'; (guest/'root').mkdir(parents=True); (guest/'root'/'out.pdf').write_bytes(b'pdf')
+            with patch.object(runtime,'_spec',return_value=('alpine',{'version':'v'},('x86',''))), \
+                 patch.object(runtime,'_target_path',return_value=guest), \
+                 patch.object(runtime,'_is_ready',return_value=True):
+                self.assertEqual(runtime.guest_path('alpine','/root/out.pdf',str(workspace)),(guest/'root'/'out.pdf'))
+                self.assertEqual(runtime.guest_path('alpine','/workspace/docs/a.txt',str(workspace)),(workspace/'docs/a.txt'))
+                with self.assertRaises(ValueError): runtime.guest_path('alpine','/proc/version',str(workspace))
+                with self.assertRaises(ValueError): runtime.guest_path('alpine','../../etc/passwd',str(workspace))
+                target=workspace/'livrable.pdf'
+                result=runtime.export_file('alpine','/root/out.pdf',str(target),str(workspace))
+            self.assertTrue(result['success'],result)
+            self.assertEqual(target.read_bytes(),b'pdf')
+
+    def test_download_file_uses_proot_export(self):
+        shared=Path(self.temp.name)/'external'/'Nemesis'
+        m.configure(self.temp.name,8090,'',str(shared))
+        sid=json.loads(m.create_session('code'))['id']
+        with patch.object(m,'_active_environment',return_value='alpine'), \
+             patch.object(m.proot_runtime,'export_file',return_value={'success':True,'path':'ignored'}) as exporter:
+            result=m._tool('download_file',{'remote_path':'/root/out.pdf','path':'docs/out.pdf'},sid)
+        self.assertTrue(result['success'],result)
+        self.assertEqual(result['path'],'docs/out.pdf')
+        exporter.assert_called_once()
+
 if __name__ == '__main__': unittest.main()
